@@ -20,6 +20,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isTranscribing = false
     private var recordingMode: RecordingMode = .dictation
     private var editPressStartedAt: Date?
+    /// 録音〜認識のあいだだけ登録する Esc の登録ID。待機中は Esc を奪わない
+    private var cancelHotKeyID: UInt32?
+    /// 1回の「録音〜貼り付け」の通し番号。取り消したら進めて、遅れて返ってきた認識結果を捨てる
+    private var runID = 0
+    private var transcribeTask: Task<Void, Never>?
     private var lastError: String?
     /// リアルタイム字幕が出せなかった理由。録音の成否とは別なので lastError と混ぜない
     private var liveCaptionNote: String?
@@ -61,28 +66,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func registerHotkeys() {
         hotkeys.unregisterAll()
+        cancelHotKeyID = nil  // unregisterAll でまとめて外れたので、持っているIDは無効
         if let toggle = HotKeySpec.parse(config.hotkey_toggle) {
-            let ok = hotkeys.register(toggle) { [weak self] in self?.toggleRecording() }
-            if !ok { lastError = "ホットキー登録失敗: \(config.hotkey_toggle)（他アプリと競合？）" }
+            let id = hotkeys.register(toggle) { [weak self] in self?.toggleRecording() }
+            if id == nil { lastError = "ホットキー登録失敗: \(config.hotkey_toggle)（他アプリと競合？）" }
         } else {
             lastError = "ホットキーを解釈できません: \(config.hotkey_toggle)"
         }
         if let pasteLast = HotKeySpec.parse(config.hotkey_paste_last) {
-            let ok = hotkeys.register(pasteLast) { [weak self] in self?.pasteLast() }
-            if !ok { lastError = "ホットキー登録失敗: \(config.hotkey_paste_last)（他アプリと競合？）" }
+            let id = hotkeys.register(pasteLast) { [weak self] in self?.pasteLast() }
+            if id == nil { lastError = "ホットキー登録失敗: \(config.hotkey_paste_last)（他アプリと競合？）" }
         } else {
             lastError = "ホットキーを解釈できません: \(config.hotkey_paste_last)"
         }
         if let edit = HotKeySpec.parse(config.hotkey_edit) {
-            let ok = hotkeys.register(
+            let id = hotkeys.register(
                 edit,
                 onRelease: { [weak self] in self?.editKeyReleased() },
                 handler: { [weak self] in self?.editKeyPressed() }
             )
-            if !ok { lastError = "ホットキー登録失敗: \(config.hotkey_edit)（他アプリと競合？）" }
+            if id == nil { lastError = "ホットキー登録失敗: \(config.hotkey_edit)（他アプリと競合？）" }
         } else {
             lastError = "ホットキーを解釈できません: \(config.hotkey_edit)"
         }
+        // 設定保存が録音中と重なった場合、いま奪っていた Esc を付け直す
+        if isRecording || isTranscribing { beginCancelHotkey() }
+        rebuildMenu()
+    }
+
+    // MARK: - 取り消し（Esc）
+
+    /// Esc は**録音〜認識のあいだだけ**奪う。
+    /// 修飾キーなしのホットキーを常時登録すると、他アプリの Esc（ダイアログを閉じる・vim 等）を
+    /// ずっと横取りしてしまう。取り消しが要る数秒だけ借りて、終わったらすぐ返す
+    private func beginCancelHotkey() {
+        guard cancelHotKeyID == nil, let esc = HotKeySpec.parse("escape") else { return }
+        // 登録できなくても録音は続ける（他アプリが Esc を握っている場合など）。
+        // 従来どおりホットキーの再押下で停止できるので、ここで止める理由はない
+        cancelHotKeyID = hotkeys.register(esc) { [weak self] in
+            // 取り消しの中で Esc 自身を登録解除する。Carbon がそのイベントを処理している最中に
+            // 解除するのは避けたいので、1ターン後ろへ逃がす（体感では同時）
+            DispatchQueue.main.async { self?.cancelCurrent() }
+        }
+    }
+
+    private func endCancelHotkey() {
+        guard let id = cancelHotKeyID else { return }
+        hotkeys.unregister(id)
+        cancelHotKeyID = nil
+    }
+
+    /// 録音中／認識中に Esc。録った音も認識結果も捨てて、何も貼らずに待機へ戻る
+    @objc private func cancelCurrent() {
+        guard isRecording || isTranscribing else { return }
+        runID += 1  // 途中の認識が遅れて返ってきても、この番号で弾かれる
+        transcribeTask?.cancel()
+        transcribeTask = nil
+        if isRecording {
+            _ = recorder.stop()  // WAVは受け取らずに捨てる
+            stopLiveCaption()
+            isRecording = false
+        }
+        isTranscribing = false
+        recordingMode = .dictation
+        endCancelHotkey()
+        lastError = nil
+        NSSound(named: "Tink")?.play()
+        if config.hud_enabled { hud.showCancelled() } else { hud.hide() }
+        updateIcon()
         rebuildMenu()
     }
 
@@ -153,10 +204,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             })
             isRecording = true
             lastError = nil
+            beginCancelHotkey()
         } catch {
             lastError = error.localizedDescription
             NSSound(named: "Basso")?.play()
             stopLiveCaption()
+            endCancelHotkey()
             showHUDError(error.localizedDescription)
         }
         updateIcon()
@@ -193,6 +246,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 短すぎる（誤爆）録音は無視
         guard seconds >= 0.3 else {
+            endCancelHotkey()
             hud.hide()
             updateIcon()
             rebuildMenu()
@@ -203,6 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let message = "APIキー未設定。設定画面から Groq APIキー を入れてください"
             lastError = message
             NSSound(named: "Basso")?.play()
+            endCancelHotkey()
             showHUDError(message)
             updateIcon()
             rebuildMenu()
@@ -218,7 +273,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let client = GroqClient(apiKey: apiKey, model: config.model)
         let cleanupConfig = config
         let mode = recordingMode
-        Task {
+        runID += 1
+        let thisRun = runID
+        transcribeTask = Task {
             do {
                 let raw = try await client.transcribe(wav: wav)
                 let text: String
@@ -249,10 +306,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         throw error
                     }
                 }
-                await MainActor.run { self.handleTranscription(text) }
+                await MainActor.run {
+                    // Esc で取り消したあとに遅れて返ってきた結果は貼らない
+                    guard self.runID == thisRun else { return }
+                    self.transcribeTask = nil
+                    self.handleTranscription(text)
+                }
             } catch {
                 await MainActor.run {
+                    guard self.runID == thisRun else { return }
+                    self.transcribeTask = nil
                     self.isTranscribing = false
+                    self.endCancelHotkey()
                     self.lastError = error.localizedDescription
                     NSSound(named: "Basso")?.play()
                     self.showHUDError(error.localizedDescription)
@@ -265,6 +330,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleTranscription(_ text: String) {
         isTranscribing = false
+        endCancelHotkey()
         if text.isEmpty {
             lastError = "無音でした（認識結果が空）"
             showHUDError("無音でした")
@@ -333,11 +399,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusText: String {
         if isRecording {
             if case .edit = recordingMode {
-                return "🔴 編集指示を録音中… (もう一度押して停止)"
+                return "🔴 編集指示を録音中… (もう一度押して停止 / ⎋ で取り消し)"
             }
-            return "🔴 録音中… (\(hotkeySymbol(config.hotkey_toggle)) で停止)"
+            return "🔴 録音中… (\(hotkeySymbol(config.hotkey_toggle)) で停止 / ⎋ で取り消し)"
         }
-        if isTranscribing { return "⏳ 認識中…" }
+        if isTranscribing { return "⏳ 認識中… (⎋ で取り消し)" }
         return "待機中 (\(hotkeySymbol(config.hotkey_toggle)) で音声入力 / 選択して \(hotkeySymbol(config.hotkey_edit)) で編集)"
     }
 

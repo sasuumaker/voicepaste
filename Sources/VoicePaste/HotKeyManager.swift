@@ -9,7 +9,7 @@ final class HotKeyManager {
     private var pressHandlers: [UInt32: () -> Void] = [:]
     private var releaseHandlers: [UInt32: () -> Void] = [:]
     private var isDown: Set<UInt32> = []
-    private var hotKeyRefs: [EventHotKeyRef?] = []
+    private var hotKeyRefs: [UInt32: EventHotKeyRef] = [:]
     private var eventHandler: EventHandlerRef?
     private var nextID: UInt32 = 1
 
@@ -55,21 +55,25 @@ final class HotKeyManager {
             // 押しっぱなしのキーリピートで再発火しない（Released が来るまで1回だけ）
             guard !isDown.contains(id) else { return }
             isDown.insert(id)
-            pressHandlers[id]?()
+            // ハンドラの中で登録が変わりうる（取り消し用Escは自分自身を外す）ので、
+            // 呼ぶ前に取り出しておく
+            let handler = pressHandlers[id]
+            handler?()
         case UInt32(kEventHotKeyReleased):
             isDown.remove(id)
-            releaseHandlers[id]?()
+            let handler = releaseHandlers[id]
+            handler?()
         default:
             break
         }
     }
 
+    /// 登録できたら、あとで個別に外すためのIDを返す。失敗したら nil。
+    /// （録音中だけ Esc を奪うといった一時的な登録に使う）
     @discardableResult
-    func register(_ spec: HotKeySpec, onRelease: (() -> Void)? = nil, handler: @escaping () -> Void) -> Bool {
+    func register(_ spec: HotKeySpec, onRelease: (() -> Void)? = nil, handler: @escaping () -> Void) -> UInt32? {
         let id = nextID
         nextID += 1
-        pressHandlers[id] = handler
-        if let onRelease { releaseHandlers[id] = onRelease }
         var ref: EventHotKeyRef?
         let hotKeyID = EventHotKeyID(signature: OSType(0x5650_4153), id: id)  // 'VPAS'
         let status = RegisterEventHotKey(
@@ -80,16 +84,25 @@ final class HotKeyManager {
             0,
             &ref
         )
-        hotKeyRefs.append(ref)
-        return status == noErr
+        guard status == noErr, let ref else { return nil }
+        hotKeyRefs[id] = ref
+        pressHandlers[id] = handler
+        if let onRelease { releaseHandlers[id] = onRelease }
+        return id
+    }
+
+    /// 1つだけ外す。取り消し用のEscのように「そのときだけ奪う」キーに使う
+    func unregister(_ id: UInt32) {
+        if let ref = hotKeyRefs.removeValue(forKey: id) { UnregisterEventHotKey(ref) }
+        pressHandlers.removeValue(forKey: id)
+        releaseHandlers.removeValue(forKey: id)
+        isDown.remove(id)
     }
 
     /// 登録済みのホットキーを全部外す。設定画面でキーを変えたときに
     /// アプリを再起動せずに再登録するために使う
     func unregisterAll() {
-        for ref in hotKeyRefs {
-            if let ref { UnregisterEventHotKey(ref) }
-        }
+        for ref in hotKeyRefs.values { UnregisterEventHotKey(ref) }
         hotKeyRefs.removeAll()
         pressHandlers.removeAll()
         releaseHandlers.removeAll()
