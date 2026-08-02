@@ -34,6 +34,12 @@ Japanese and English are detected automatically; no language switch to flip.
 `SPEC.md` documents the internals, including the failure modes above and how they were diagnosed.
 It is written in Japanese.
 
+## Windows?
+
+Not yet — and honestly it would be a rewrite. If you want it,
+**[👍 this issue](https://github.com/sasuumaker/voicepaste/issues/1)** (20 votes and I start),
+or comment there if you can help test on Windows (1 tester and I start immediately).
+
 ## Requirements
 
 - macOS 13 or later (developed on macOS 26, Apple Silicon)
