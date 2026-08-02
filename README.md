@@ -1,5 +1,7 @@
 # VoicePaste
 
+**English** | [日本語](#voicepaste-日本語)
+
 A menu-bar dictation app for macOS. Press a hotkey, talk, and the text lands at your cursor.
 
 Built as a self-hosted replacement for paid dictation apps. Recognition runs on
@@ -48,7 +50,7 @@ cd voicepaste
 open build/VoicePaste.app
 ```
 
-Then open the menu-bar icon → **設定…** and paste your Groq API key.
+Then open the menu-bar icon → **設定…** (Settings) and paste your Groq API key.
 
 `setup-signing.sh` exists because an ad-hoc signature changes on every rebuild, and macOS then treats
 the app as a new one and drops its accessibility permission. A fixed certificate keeps the permission
@@ -84,7 +86,8 @@ never at risk of being committed. The settings window writes the same file.
 
 The key is read from `groq_api_key` first, then the `GROQ_API_KEY` environment variable.
 `cleanup_enabled` runs the transcript through an LLM to add punctuation and drop fillers; turn it off
-to paste exactly what Whisper heard.
+to paste exactly what Whisper heard. `live_caption_locale` only affects the on-screen caption — the
+pasted text always comes from Whisper's own language detection.
 
 ## Cost
 
@@ -113,7 +116,9 @@ MIT — see `LICENSE`.
 
 ---
 
-# VoicePaste（日本語）
+# VoicePaste （日本語）
+
+[English](#voicepaste) | **日本語**
 
 macOSのメニューバーに常駐する音声入力アプリです。ショートカットキーを押して喋ると、カーソル位置に文章が入ります。
 
@@ -165,19 +170,58 @@ open build/VoicePaste.app
 そのたびに外れるからです。固定の証明書を使うと、作り直しても許可が維持されます。専用のキーチェーンを
 作るので、ログインキーチェーンには触れません。
 
+### 必要な権限
+
+| 権限 | 用途 | 無いとどうなるか |
+|---|---|---|
+| マイク | 録音 | 何も録音されません |
+| アクセシビリティ | `⌘V` の送信 | クリップボードには入るので、手動で貼れます |
+| 音声認識 | リアルタイム字幕のみ | 録音と貼り付けは動き、字幕だけ出ません |
+
 ## 設定
 
 設定は `~/.config/voicepaste/config.json` にあります。**リポジトリの外**なので、APIキーを
 誤ってコミットする心配はありません。設定画面も同じファイルを書き換えます。
 
+```json
+{
+  "groq_api_key": "",
+  "model": "whisper-large-v3-turbo",
+  "hotkey_toggle": "cmd+slash",
+  "hotkey_paste_last": "ctrl+cmd+v",
+  "hotkey_edit": "ctrl+slash",
+  "cleanup_enabled": true,
+  "cleanup_model": "llama-3.3-70b-versatile",
+  "hud_enabled": true,
+  "live_caption_enabled": true,
+  "live_caption_locale": "ja-JP"
+}
+```
+
+APIキーは `groq_api_key` を先に見て、無ければ環境変数 `GROQ_API_KEY` を使います。
 `cleanup_enabled` は、認識結果をLLMに通して句読点を補い、フィラーを除去する設定です。
-オフにすると、認識したままの文章が貼られます。
+オフにすると、認識したままの文章が貼られます。`live_caption_locale` は画面に出す字幕だけに効く設定で、
+貼り付ける文章は常にWhisperの言語自動判定に従います。
 
 ## 費用
 
 Groqの無料枠は、認識が1日2,000回、整形が1日1,000回です。音声入力1回で両方を1回ずつ使うので、
 厳しい方の整形側で **1日およそ1,000回** が上限になります。超えた場合は課金ではなく、
 リクエストが一時的に弾かれるだけです。
+
+有料プランでも金額は小さく、認識は音声1時間あたりの課金なので、1日30回ほど使う程度なら
+月に数十セント規模に収まります。
+
+## 開発
+
+```bash
+swift build
+swift run VoicePasteTests   # ユニットテスト（XCTest非依存。CLTのみの環境向け）
+swift run VoicePasteE2E     # 実際のGroq APIを叩くE2Eテスト。APIキーが要ります
+```
+
+Xcode本体が無くても動くようにXCTestを使っていません。E2Eテストは `say` で音声を合成するので、
+音声指示や同音異義語の誤変換といった厄介な経路を、マイクなしで検証できます。
 
 ## ライセンス
 
