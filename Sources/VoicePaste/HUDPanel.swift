@@ -16,6 +16,7 @@ final class HUDPanel {
         case transcribing
         case result(String)
         case info(String)
+        case cancelled
         case error(String)
     }
 
@@ -93,6 +94,16 @@ final class HUDPanel {
         scheduleHide(after: 2.0)
     }
 
+    /// Esc で取り消したとき。何も貼らずに終わったことをその場で伝える
+    func showCancelled() {
+        stopElapsedTimer()
+        meter.fadeOut()
+        setState(.cancelled)
+        setText("", dimmed: true)
+        show()
+        scheduleHide(after: 1.2)
+    }
+
     func showError(_ text: String) {
         stopElapsedTimer()
         meter.fadeOut()
@@ -120,19 +131,22 @@ final class HUDPanel {
     private func setState(_ state: State) {
         switch state {
         case .recording(let hint):
-            stateLabel.stringValue = "● 録音中   0:00   \(hint) で停止"
+            stateLabel.stringValue = "● 録音中   0:00   \(hint) で停止 ／ ⎋ で取り消し"
             stateLabel.textColor = .systemRed
         case .editRecording(let hint):
-            stateLabel.stringValue = "● 編集指示を録音中   0:00   \(hint) で確定"
+            stateLabel.stringValue = "● 編集指示を録音中   0:00   \(hint) で確定 ／ ⎋ で取り消し"
             stateLabel.textColor = .systemOrange
         case .transcribing:
-            stateLabel.stringValue = "認識中…"
+            stateLabel.stringValue = "認識中…   ⎋ で取り消し"
             stateLabel.textColor = .secondaryLabelColor
         case .result:
             stateLabel.stringValue = "貼り付けました"
             stateLabel.textColor = .systemGreen
         case .info:
             stateLabel.stringValue = ""
+            stateLabel.textColor = .secondaryLabelColor
+        case .cancelled:
+            stateLabel.stringValue = "取り消しました"
             stateLabel.textColor = .secondaryLabelColor
         case .error:
             stateLabel.stringValue = "⚠️ エラー"

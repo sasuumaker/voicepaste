@@ -13,6 +13,7 @@ Built as a self-hosted replacement for paid dictation apps. Recognition runs on
 | | |
 |---|---|
 | **Dictate** | Hotkey to start, hotkey again to stop. The result is pasted at the cursor. |
+| **Cancel** | Press <kbd>Esc</kbd> while recording or transcribing. The audio and the result are thrown away and nothing is pasted. |
 | **Live caption** | A panel at the bottom of the screen shows an input-level meter and what you are saying, as you say it. It keeps growing instead of scrolling away, so you can read back the whole utterance. |
 | **Edit by voice** | Select text, press the edit hotkey, and say an instruction ("make this a list", "translate to English"). The selection is replaced with the result. |
 | **Paste again** | If you dictated while nothing was focused, focus the right field and press the re-paste hotkey. |
@@ -30,6 +31,9 @@ Japanese and English are detected automatically; no language switch to flip.
 - **Pasting waits for your fingers.** A synthesised `⌘V` is merged with the modifier keys you are
   physically holding, so firing it while `⌃⌘V` is still down delivers `⌃⌘V` and pastes nothing.
   VoicePaste waits (briefly) for the modifiers to come up first.
+- **Esc is borrowed, not taken.** The cancel key is registered as a global hotkey only while a
+  recording or a transcription is in flight, and released the moment it finishes. A modifier-less
+  global hotkey held permanently would swallow Esc from every other app on the Mac.
 
 `SPEC.md` documents the internals, including the failure modes above and how they were diagnosed.
 It is written in Japanese.
@@ -136,6 +140,7 @@ macOSのメニューバーに常駐する音声入力アプリです。ショー
 | | |
 |---|---|
 | **音声入力** | ショートカットで開始、もう一度押して停止。カーソル位置に貼り付きます |
+| **途中でやめる** | 録音中・認識中に <kbd>Esc</kbd> を押すと、録った音も認識結果も捨てて、何も貼りません |
 | **リアルタイム字幕** | 画面下のパネルに音量メーターと、喋っている内容がその場で出ます。流れて消えるのではなく溜まって伸びるので、話した全体を読み返せます |
 | **音声で書き換え** | 文章を選んで編集用のキーを押し、「これをリストにして」のように指示すると、選んだ部分が結果に置き換わります |
 | **もう一度貼る** | どこにもフォーカスしていない状態で喋ってしまったとき、入れたい場所を選んでから押し直せます |
@@ -151,6 +156,8 @@ macOSのメニューバーに常駐する音声入力アプリです。ショー
   パネルは非アクティブ・クリック透過の窓にしてあります
 - **貼り付けは指が離れるのを待ちます。** 合成した `⌘V` は実際に押されているキーと合わさるため、
   `⌃⌘V` を押したまま送ると相手には `⌃⌘V` として届き、何も貼られません
+- **Escは借りるだけです。** 取り消し用のEscを登録するのは録音中と認識中だけで、終わったらすぐ返します。
+  修飾キーなしのキーをずっと登録すると、他のアプリのEsc（ダイアログを閉じる等）まで横取りしてしまうためです
 
 内部の詳細と、上記のような不具合をどう切り分けたかは `SPEC.md` に書いてあります。
 

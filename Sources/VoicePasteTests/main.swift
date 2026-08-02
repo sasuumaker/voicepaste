@@ -54,6 +54,9 @@ expect(HotKeySpec.symbolString(for: "bogus") == "bogus", "unparseable symbol fal
 // 修飾キーなしは通常のキー入力を丸ごと奪うので設定画面で弾く
 expect(HotKeySpec(keyCode: 44, carbonModifiers: 0).hasModifier == false, "no modifier detected")
 expect(HotKeySpec.parse("cmd+slash")?.hasModifier == true, "modifier detected")
+// 取り消し用の Esc（録音中だけ登録する。設定には出さないのでコード側から parse する）
+expect(HotKeySpec.parse("escape") == HotKeySpec(keyCode: 53, carbonModifiers: 0), "parse escape (取り消し用)")
+expect(HotKeySpec.symbolString(for: "escape") == "⎋", "symbol ⎋")
 
 print("WAV")
 let samples: [Float] = [0.0, 0.5, -0.5, 1.0]
