@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>VoicePaste</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.sasuu.voicepaste</string>
+	<key>CFBundleName</key>
+	<string>VoicePaste</string>
+	<key>CFBundleDisplayName</key>
+	<string>VoicePaste</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>音声入力（ディクテーション）のためにマイクを使用します。</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>録音中に喋っている内容を画面下へリアルタイム表示するため、端末内の音声認識を使用します。音声は外部に送信されません。</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>
