@@ -28,8 +28,12 @@ Japanese and English are detected automatically; no language switch to flip.
   sending audio to a server. The text that actually gets pasted comes from Groq.
 - **The caption panel never takes keyboard focus.** Paste targets the app you were typing in, so the
   panel is a non-activating, click-through window.
-- **Pasting waits for your fingers.** A synthesised `⌘V` is merged with the modifier keys you are
-  physically holding, so firing it while `⌃⌘V` is still down delivers `⌃⌘V` and pastes nothing.
+- **Your clipboard is left alone.** Dictated text is sent as keystrokes, not pasted, so it never
+  enters the clipboard and never fills up a clipboard manager like Clipy or Paste. The last result is
+  kept in the app, so the re-paste hotkey still works. Set `paste_via_clipboard` if some app mangles
+  the keystrokes and you want the old copy-and-`⌘V` behaviour back.
+- **Pasting waits for your fingers.** Synthesised keystrokes are merged with the modifier keys you
+  are physically holding, so firing them while `⌃⌘V` is still down delivers `⌃⌘V` and types nothing.
   VoicePaste waits (briefly) for the modifiers to come up first.
 - **Esc is borrowed, not taken.** The cancel key is registered as a global hotkey only while a
   recording or a transcription is in flight, and released the moment it finishes. A modifier-less
@@ -66,12 +70,29 @@ Then open the menu-bar icon → **設定…** (Settings) and paste your Groq API
 the app as a new one and drops its accessibility permission. A fixed certificate keeps the permission
 across rebuilds. It creates its own keychain and never touches your login keychain.
 
+### Start at login
+
+Tick **「ログイン時に起動」** in the menu bar, or from a terminal:
+
+```bash
+./install-autostart.sh              # register and start it now
+./install-autostart.sh --uninstall  # remove
+```
+
+Both do the same thing: they register a launchd user agent
+(`~/Library/LaunchAgents/com.sasuu.voicepaste.plist`) that starts VoicePaste at login and restarts it
+if it crashes. Quitting from the menu bar does *not* bring it back. The agent points at the app by
+path, so rebuilding with `build.sh` keeps working.
+
+The menu-bar switch only writes or removes that file, so it never disturbs the copy you are using —
+it takes effect from your next login. The script also loads it into launchd straight away.
+
 ### Permissions
 
 | Permission | Used for | Without it |
 |---|---|---|
 | Microphone | Recording | Nothing is recorded |
-| Accessibility | Sending `⌘V` | Text still reaches the clipboard; paste manually |
+| Accessibility | Sending keystrokes | Text falls back to the clipboard; paste manually |
 | Speech Recognition | Live caption only | Recording and pasting work; the caption is skipped |
 
 ## Configuration
@@ -90,14 +111,16 @@ never at risk of being committed. The settings window writes the same file.
   "cleanup_model": "llama-3.3-70b-versatile",
   "hud_enabled": true,
   "live_caption_enabled": true,
-  "live_caption_locale": "ja-JP"
+  "live_caption_locale": "ja-JP",
+  "paste_via_clipboard": false
 }
 ```
 
 The key is read from `groq_api_key` first, then the `GROQ_API_KEY` environment variable.
 `cleanup_enabled` runs the transcript through an LLM to add punctuation and drop fillers; turn it off
 to paste exactly what Whisper heard. `live_caption_locale` only affects the on-screen caption — the
-pasted text always comes from Whisper's own language detection.
+pasted text always comes from Whisper's own language detection. `paste_via_clipboard` is the escape
+hatch back to copy-and-`⌘V`, for apps that do not accept synthesised keystrokes cleanly.
 
 ## Cost
 
@@ -154,8 +177,12 @@ macOSのメニューバーに常駐する音声入力アプリです。ショー
   言語のときは、サーバーへ音声を送らずに字幕を出さない判断をします。実際に貼り付ける文章はGroqが作ります
 - **字幕パネルはキーボードのフォーカスを奪いません。** 貼り付け先は「さっきまで入力していたアプリ」なので、
   パネルは非アクティブ・クリック透過の窓にしてあります
-- **貼り付けは指が離れるのを待ちます。** 合成した `⌘V` は実際に押されているキーと合わさるため、
-  `⌃⌘V` を押したまま送ると相手には `⌃⌘V` として届き、何も貼られません
+- **クリップボードには触りません。** 認識した文章は貼り付けではなくキー入力として送るので、
+  クリップボードに入らず、ClipyやPasteのような履歴アプリが音声入力の結果で埋まりません。
+  直前の結果はアプリ内に持っているので、もう一度貼るキーはそのまま使えます。
+  文字が化けるアプリがあったときは `paste_via_clipboard` で従来のコピー＆`⌘V` に戻せます
+- **貼り付けは指が離れるのを待ちます。** 合成したキー入力は実際に押されているキーと合わさるため、
+  `⌃⌘V` を押したまま送ると相手には `⌃⌘V` として届き、何も入りません
 - **Escは借りるだけです。** 取り消し用のEscを登録するのは録音中と認識中だけで、終わったらすぐ返します。
   修飾キーなしのキーをずっと登録すると、他のアプリのEsc（ダイアログを閉じる等）まで横取りしてしまうためです
 
@@ -183,12 +210,29 @@ open build/VoicePaste.app
 そのたびに外れるからです。固定の証明書を使うと、作り直しても許可が維持されます。専用のキーチェーンを
 作るので、ログインキーチェーンには触れません。
 
+### ログイン時に自動起動する
+
+メニューバーの「ログイン時に起動」にチェックを入れるか、ターミナルから:
+
+```bash
+./install-autostart.sh              # 登録して、いますぐ起動する
+./install-autostart.sh --uninstall  # 解除する
+```
+
+どちらも同じもので、launchd のユーザーエージェント
+（`~/Library/LaunchAgents/com.sasuu.voicepaste.plist`）を登録します。ログインするたびに起動し、
+異常終了したら立ち上がり直します。メニューバーから自分で終了したときは立ち上がりません。
+アプリの場所を指しているだけなので、`build.sh` で作り直しても効き続けます。
+
+メニューのチェックはこの登録ファイルを置く・消すだけなので、いま使っているVoicePasteには影響せず、
+次回ログインから効きます。スクリプトのほうは、その場で launchd に読み込ませるところまでやります。
+
 ### 必要な権限
 
 | 権限 | 用途 | 無いとどうなるか |
 |---|---|---|
 | マイク | 録音 | 何も録音されません |
-| アクセシビリティ | `⌘V` の送信 | クリップボードには入るので、手動で貼れます |
+| アクセシビリティ | キー入力の送信 | クリップボードに入るので、手動で貼れます |
 | 音声認識 | リアルタイム字幕のみ | 録音と貼り付けは動き、字幕だけ出ません |
 
 ## 設定
@@ -207,14 +251,16 @@ open build/VoicePaste.app
   "cleanup_model": "llama-3.3-70b-versatile",
   "hud_enabled": true,
   "live_caption_enabled": true,
-  "live_caption_locale": "ja-JP"
+  "live_caption_locale": "ja-JP",
+  "paste_via_clipboard": false
 }
 ```
 
 APIキーは `groq_api_key` を先に見て、無ければ環境変数 `GROQ_API_KEY` を使います。
 `cleanup_enabled` は、認識結果をLLMに通して句読点を補い、フィラーを除去する設定です。
 オフにすると、認識したままの文章が貼られます。`live_caption_locale` は画面に出す字幕だけに効く設定で、
-貼り付ける文章は常にWhisperの言語自動判定に従います。
+貼り付ける文章は常にWhisperの言語自動判定に従います。`paste_via_clipboard` は、キー入力をうまく
+受け取れないアプリがあったときに、従来のコピー＆`⌘V` へ戻すための逃げ道です。
 
 ## 費用
 
