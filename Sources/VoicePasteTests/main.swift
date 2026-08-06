@@ -238,6 +238,8 @@ expect(defaultConfig.cleanup_model == "llama-3.3-70b-versatile", "default cleanu
 expect(defaultConfig.hud_enabled == true, "hud on by default")
 expect(defaultConfig.live_caption_enabled == true, "live caption on by default")
 expect(defaultConfig.live_caption_locale == "ja-JP", "default caption locale")
+// 既定はクリップボードを使わない。使うとクリップボード履歴アプリに音声入力の結果が積まれてしまう
+expect(defaultConfig.paste_via_clipboard == false, "貼り付けは既定でクリップボードを使わない")
 expect(defaultConfig.duplicatedHotkey == nil, "default hotkeys do not collide")
 
 // 同じキーを2つの機能に割り当てたら設定画面で弾く
@@ -263,8 +265,91 @@ if let legacy = try? JSONDecoder().decode(Config.self, from: Data(legacyJSON.utf
     expect(legacy.hud_enabled == true, "legacy config gets hud default")
     expect(legacy.live_caption_enabled == true, "legacy config gets live caption default")
     expect(legacy.live_caption_locale == "ja-JP", "legacy config gets caption locale default")
+    expect(legacy.paste_via_clipboard == false, "既存のconfigも読み直すとクリップボードを使わなくなる")
 } else {
     expect(false, "legacy config decodes")
+}
+
+print("直接入力の分割（クリップボードを使わない貼り付け）")
+do {
+    // つなぎ直したら元に戻る、が最低条件
+    for text in [
+        "",
+        "短い",
+        "音声入力した長めの文章をそのままカーソル位置へ入れる。句読点も含めて崩れないこと。",
+        String(repeating: "あ", count: 200),
+        "絵文字🙂と結合文字👨‍👩‍👧‍👦が混ざる場合",
+        "English mixed with 日本語 and numbers 12345",
+    ] {
+        expect(TypedText.chunks(of: text).joined() == text, "つなぎ直すと元に戻る: \(text.prefix(12))")
+    }
+    expect(TypedText.chunks(of: "").isEmpty, "空文字は送るものがない")
+
+    // 上限を超えない。超えると相手に届かない文字が出る
+    let long = String(repeating: "あ", count: 105)
+    let chunks = TypedText.chunks(of: long, limit: 20)
+    expect(chunks.allSatisfy { $0.utf16.count <= 20 }, "どの塊も上限を超えない")
+    expect(chunks.count == 6, "105文字は20区切りで6つ")
+
+    // 書記素の途中で切ると化けるので、切ってはいけない
+    let family = "👨‍👩‍👧‍👦"  // UTF-16で11。単独でも上限を超えるが割ってはいけない
+    expect(TypedText.chunks(of: family, limit: 4) == [family], "上限を超える1文字でも割らない")
+    let emojis = String(repeating: "🙂", count: 30)  // 1つあたりUTF-16で2
+    expect(
+        TypedText.chunks(of: emojis, limit: 5).allSatisfy { $0.utf16.count % 2 == 0 },
+        "サロゲートペアを割らない"
+    )
+    expect(TypedText.chunks(of: emojis, limit: 5).joined() == emojis, "絵文字だけでも元に戻る")
+}
+
+print("ログイン時の自動起動（登録内容）")
+do {
+    let dictionary = LoginItem.plistDictionary(
+        executablePath: "/tmp/VoicePaste.app/Contents/MacOS/VoicePaste",
+        logPath: "/tmp/VoicePaste.log"
+    )
+    expect(dictionary["Label"] as? String == LoginItem.label, "label")
+    expect(
+        dictionary["ProgramArguments"] as? [String] == ["/tmp/VoicePaste.app/Contents/MacOS/VoicePaste"],
+        "起動するのはバンドル内のバイナリ"
+    )
+    expect(dictionary["RunAtLoad"] as? Bool == true, "ログイン時に起動する")
+    // 正常終了（メニューから終了）では立ち上がってこない設定になっているか
+    expect(
+        (dictionary["KeepAlive"] as? [String: Bool])?["SuccessfulExit"] == false,
+        "異常終了した時だけ起動し直す"
+    )
+    expect(dictionary["StandardErrorPath"] as? String == "/tmp/VoicePaste.log", "エラー出力先")
+
+    // 書き出して読み直しても壊れない。パスに & や空白や日本語が入っていてもXMLとして成立する
+    for path in [
+        "/Users/me/Apps/VoicePaste.app/Contents/MacOS/VoicePaste",
+        "/Users/me/R&D projects/音声/VoicePaste.app/Contents/MacOS/VoicePaste",
+        "/Users/me/<weird>/VoicePaste.app/Contents/MacOS/VoicePaste",
+    ] {
+        if let data = try? LoginItem.plistData(executablePath: path, logPath: "/tmp/VoicePaste.log") {
+            expect(
+                LoginItem.registeredExecutablePath(plistData: data) == path,
+                "書き出して読み直せる: \(path)"
+            )
+        } else {
+            expect(false, "書き出せる: \(path)")
+        }
+    }
+
+    // 壊れたファイルを「登録済み」と誤判定しない
+    expect(
+        LoginItem.registeredExecutablePath(plistData: Data("これはplistではない".utf8)) == nil,
+        "plistでないファイルは未登録として扱う"
+    )
+    if let empty = try? PropertyListSerialization.data(
+        fromPropertyList: [String: Any](), format: .xml, options: 0)
+    {
+        expect(
+            LoginItem.registeredExecutablePath(plistData: empty) == nil,
+            "起動対象の書かれていないplistは未登録として扱う"
+        )
+    }
 }
 
 print("")

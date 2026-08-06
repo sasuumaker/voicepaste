@@ -1,6 +1,5 @@
 import AppKit
 import AVFoundation
-import ServiceManagement
 import VoicePasteCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -340,7 +339,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let source: String
             if case .edit = recordingMode { source = "編集モード" } else { source = "音声入力" }
             // 「貼り付けました」は実際に送った瞬間に出す（表示と実物がズレないように）
-            let pasted = Paster.paste(text, source: source) { [weak self] in
+            let pasted = Paster.paste(
+                text, source: source, viaClipboard: config.paste_via_clipboard
+            ) { [weak self] in
                 self?.showHUDResult(text)
             }
             if !pasted {
@@ -363,7 +364,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showHUDError("まだ貼り付けられる内容がありません")
             return
         }
-        let pasted = Paster.paste(last, source: "再貼り付け") { [weak self] in
+        let pasted = Paster.paste(
+            last, source: "再貼り付け", viaClipboard: config.paste_via_clipboard
+        ) { [weak self] in
             self?.showHUDResult(last, prefix: "もう一度貼り付けました")
         }
         if !pasted {
@@ -457,7 +460,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let loginItem = NSMenuItem(title: "ログイン時に起動", action: #selector(toggleLoginItem), keyEquivalent: "")
         loginItem.target = self
-        loginItem.state = (SMAppService.mainApp.status == .enabled) ? .on : .off
+        loginItem.state = LoginItem.isEnabled() ? .on : .off
+        loginItem.toolTip = "次回ログインから有効になります"
         menu.addItem(loginItem)
 
         let openConfig = NSMenuItem(title: "設定ファイルを開く", action: #selector(openConfigFile), keyEquivalent: "")
@@ -497,12 +501,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         requestSpeechPermissionIfNeeded()
     }
 
+    /// 自動起動のオン/オフ。登録ファイルを置く・消すだけなので、いま動いているVoicePasteには影響しない
     @objc private func toggleLoginItem() {
         do {
-            if SMAppService.mainApp.status == .enabled {
-                try SMAppService.mainApp.unregister()
+            if LoginItem.isEnabled() {
+                try LoginItem.disable()
             } else {
-                try SMAppService.mainApp.register()
+                try LoginItem.enable()
             }
             lastError = nil
         } catch {

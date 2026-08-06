@@ -16,6 +16,10 @@ public struct Config: Codable {
     public var live_caption_enabled: Bool
     /// リアルタイム表示に使う言語。確定テキストはGroq Whisperの自動判定なのでここは表示専用
     public var live_caption_locale: String
+    /// 貼り付けにクリップボードを使うか。
+    /// 既定の false では文字を直接キー入力として送るので、クリップボードとその履歴アプリを汚さない。
+    /// 文字が化ける・取りこぼすアプリがあった場合の逃げ道として true にできる
+    public var paste_via_clipboard: Bool
 
     public init(
         groq_api_key: String,
@@ -27,7 +31,8 @@ public struct Config: Codable {
         cleanup_model: String,
         hud_enabled: Bool,
         live_caption_enabled: Bool,
-        live_caption_locale: String
+        live_caption_locale: String,
+        paste_via_clipboard: Bool
     ) {
         self.groq_api_key = groq_api_key
         self.model = model
@@ -39,6 +44,7 @@ public struct Config: Codable {
         self.hud_enabled = hud_enabled
         self.live_caption_enabled = live_caption_enabled
         self.live_caption_locale = live_caption_locale
+        self.paste_via_clipboard = paste_via_clipboard
     }
 
     /// 古い config.json に無いキーはデフォルト値で埋める（後方互換）
@@ -55,6 +61,7 @@ public struct Config: Codable {
         hud_enabled = try container.decodeIfPresent(Bool.self, forKey: .hud_enabled) ?? def.hud_enabled
         live_caption_enabled = try container.decodeIfPresent(Bool.self, forKey: .live_caption_enabled) ?? def.live_caption_enabled
         live_caption_locale = try container.decodeIfPresent(String.self, forKey: .live_caption_locale) ?? def.live_caption_locale
+        paste_via_clipboard = try container.decodeIfPresent(Bool.self, forKey: .paste_via_clipboard) ?? def.paste_via_clipboard
     }
 
     public static let `default` = Config(
@@ -67,7 +74,8 @@ public struct Config: Codable {
         cleanup_model: "llama-3.3-70b-versatile",
         hud_enabled: true,
         live_caption_enabled: true,
-        live_caption_locale: "ja-JP"
+        live_caption_locale: "ja-JP",
+        paste_via_clipboard: false
     )
 
     public static var configURL: URL {
