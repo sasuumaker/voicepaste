@@ -199,6 +199,72 @@ expect(
     GroqClient.cleanupSystemPrompt.contains("改行を追加しない"),
     "整形プロンプトが改行の追加を禁じている"
 )
+expect(
+    GroqClient.cleanupSystemPrompt.contains("意味を持つ数字"),
+    "整形プロンプトが、化けたつなぎ言葉を消しつつ本物の数字は守るよう指示している"
+)
+
+print("GroqClient.transcriptionHint")
+// 発話先頭の「えーっと」が別語に化けるのを防ぐヒント（実測・2026-08-10）。
+// language=ja では直らず、このヒントで直った
+expect(
+    GroqClient.transcriptionHint.contains("えーっと"),
+    "認識ヒントがつなぎ言葉の例を含む"
+)
+if let hintBody = GroqClient.makeRequest(
+    wav: Data(), apiKey: "test-key", model: "whisper-large-v3-turbo", boundary: "B"
+).httpBody, let hintText = String(data: hintBody, encoding: .utf8) {
+    expect(hintText.contains("name=\"prompt\""), "認識リクエストにヒントが載っている")
+    expect(hintText.contains(GroqClient.transcriptionHint), "ヒントの中身が入っている")
+    expect(!hintText.contains("name=\"language\""), "言語は固定しない（英語の自動判定を残す）")
+}
+
+print("CleanupGuard")
+// 実際に起きた壊れ方: 整形するはずが質問に答えてしまい、AIの回答が貼られた（2026-08-10）
+expect(
+    !CleanupGuard.accept(
+        raw: "この構成のメリットとデメリットを箇条書きで出して",
+        cleaned: "この構成のメリットとデメリットは、以下の通りです。メリット：整形されたテキストが出力されるので、読みやすくなり、理解もしやすくなります。デメリット：フィラーが除去されるため、話者のニュアンスや感情が失われる可能性があります。"
+    ),
+    "整形が質問に答えてしまった結果は弾く"
+)
+expect(
+    CleanupGuard.accept(
+        raw: "えーとこちらは今どういう状況ですかかいつまんで説明してください",
+        cleaned: "こちらは今どういう状況ですか、かいつまんで説明してください。"
+    ),
+    "句読点を足してつなぎ言葉を消しただけなら通す"
+)
+expect(
+    CleanupGuard.accept(raw: "8これ今どうなってるか教えて", cleaned: "これは今どうなってるか教えて。"),
+    "化けたつなぎ言葉を落としただけなら通す"
+)
+expect(
+    CleanupGuard.accept(
+        raw: "8 明日の会議は10時からで参加者は8人です",
+        cleaned: "明日の会議は10時からで、参加者は8人です。"
+    ),
+    "本物の数字を残したまま頭の余計な数字を落とすのは通す"
+)
+// つなぎ言葉だらけの発話。中身がほとんど消えても、残った文字は元テキスト由来なので通す
+expect(
+    CleanupGuard.accept(raw: "えーっとえーっとえーっとはい", cleaned: "はい。"),
+    "つなぎ言葉だけが大量に消えるのは通す"
+)
+expect(
+    !CleanupGuard.accept(raw: "現状どうなってる", cleaned: "現状については私には分かりません。"),
+    "質問に答えた短い文も弾く"
+)
+expect(!CleanupGuard.accept(raw: "はい", cleaned: ""), "中身のある発話が空になったら弾く")
+expect(CleanupGuard.accept(raw: "", cleaned: ""), "空は空のまま通す")
+expect(
+    CleanupGuard.longestCommonSubsequenceLength(Array("あいうえお"), Array("あうお")) == 3,
+    "共有している並びの長さを数えられる"
+)
+expect(
+    CleanupGuard.core(of: "こんにちは、世界。").count == 7,
+    "判定では句読点を数に入れない"
+)
 
 print("GroqClient.makeEditRequest")
 let editRequest = GroqClient.makeEditRequest(
