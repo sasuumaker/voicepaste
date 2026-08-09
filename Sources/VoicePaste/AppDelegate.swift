@@ -283,9 +283,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if cleanupConfig.cleanup_enabled, !raw.isEmpty {
                         // 整形失敗時は生テキストにフォールバック（貼り付けを止めない）
                         let cleaner = GroqClient(apiKey: apiKey, model: cleanupConfig.cleanup_model)
-                        text = (try? await cleaner.cleanup(text: raw)) ?? raw
+                        if let result = try? await cleaner.cleanup(text: raw) {
+                            text = result.text
+                            TranscriptDebugLog.write(
+                                raw: raw, candidate: result.candidate, accepted: result.accepted
+                            )
+                        } else {
+                            text = raw
+                            TranscriptDebugLog.write(raw: raw, candidate: nil, accepted: nil)
+                        }
                     } else {
                         text = raw
+                        TranscriptDebugLog.write(raw: raw, candidate: nil, accepted: nil)
                     }
                 case .edit(let selection):
                     // 指示が無音なら何もしない。編集APIが失敗したら throw → エラー表示

@@ -76,6 +76,33 @@ enum CaptionDebugLog {
     }
 }
 
+/// 認識と整形の診断ログ（~/.config/voicepaste/transcript-debug.log）。
+///
+/// 「変な文字が貼られた」ときに、聞き取りが外したのか整形が書き換えたのかを分けるためのもの。
+/// これが無かったせいで2026-08-10の切り分けが大きく回り道した（文字数しか残っていなかった）。
+enum TranscriptDebugLog {
+    static var url: URL { DebugLog.url("transcript-debug.log") }
+
+    /// - Parameters:
+    ///   - candidate: 整形モデルが返してきた文。整形を通していないときは nil
+    ///   - accepted: 検算を通ったか。nil は検算にかけていない（整形オフ／整形が失敗）
+    static func write(raw: String, candidate: String?, accepted: Bool?) {
+        var lines = ["  生(\(raw.count)字): \(DebugLog.oneLine(raw, max: 300))"]
+        if let candidate {
+            lines.append("  整形後(\(candidate.count)字): \(DebugLog.oneLine(candidate, max: 300))")
+        } else {
+            lines.append("  整形後: なし（整形オフ、または整形の呼び出しに失敗）")
+        }
+        switch accepted {
+        case true?: lines.append("  判定: 採用")
+        case false?: lines.append("  判定: ★破棄（中身が書き換わっていたので生テキストを貼った）")
+        case nil: lines.append("  判定: 検算なし（生テキストをそのまま貼った）")
+        }
+        let entry = (["[\(DebugLog.timestamp())] 音声入力"] + lines).joined(separator: "\n") + "\n"
+        DebugLog.prepend(entry, to: "transcript-debug.log", limit: 30_000)
+    }
+}
+
 /// 貼り付けの診断ログ（~/.config/voicepaste/paste-debug.log）。
 /// 「押したのに貼り付かない」が起きたとき、ホットキーが発火したのか /
 /// 権限があるのか / 修飾キーが押しっぱなしだったのか を切り分けるためのもの。
