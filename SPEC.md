@@ -360,6 +360,12 @@ swift run VoicePasteTests  # ユニットテスト（XCTest非依存ランナー
 ./install-autostart.sh     # ログイン時の自動起動を登録（任意）
 ```
 
+### CI（GitHub Actions）
+
+- `.github/workflows/ci.yml`: push（main）と全プルリクエストで `swift build` → `swift run VoicePasteTests` を macOSランナー上で自動実行する
+- E2E（`VoicePasteE2E`）はCIに**含めない**設計: 実Groq APIキーと日本語TTS音声（Kyoko）が必要で、ランナー環境に依存するため。E2Eはローカルで回す
+- `.build` をキャッシュするので2回目以降のCIは短くなる
+
 - 環境制約: フルXcodeなし（CLTのみ）のため XCTest/Testing が使えない → 素のテストランナー方式
 - 非対話シェルで日本語を正しく扱うため両スクリプト冒頭で `LANG/LC_ALL=en_US.UTF-8` を設定（`set -u` 下で `$VAR「日本語」` が変数名誤認する対策として日本語隣接は `${VAR}` で囲む）
 - macOS 13+、Apple Silicon/Intel両対応
