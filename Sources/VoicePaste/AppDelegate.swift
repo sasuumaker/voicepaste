@@ -278,23 +278,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 let raw = try await client.transcribe(wav: wav)
                 let text: String
+                // 整形に失敗しても貼り付けは止めないが、失敗したことはメニューに出す
+                var cleanupFailure: String?
                 switch mode {
                 case .dictation:
                     if cleanupConfig.cleanup_enabled, !raw.isEmpty {
-                        // 整形失敗時は生テキストにフォールバック（貼り付けを止めない）
+                        // 整形失敗時は生テキストにフォールバック（貼り付けを止めない）。
+                        // ただし理由は必ずログに残す。残していなかったせいで、整形モデルの廃止に9日間気づけなかった（2026-08-29）
                         let cleaner = GroqClient(apiKey: apiKey, model: cleanupConfig.cleanup_model)
-                        if let result = try? await cleaner.cleanup(text: raw) {
+                        do {
+                            let result = try await cleaner.cleanup(text: raw)
                             text = result.text
                             TranscriptDebugLog.write(
                                 raw: raw, candidate: result.candidate, accepted: result.accepted
                             )
-                        } else {
+                        } catch {
                             text = raw
-                            TranscriptDebugLog.write(raw: raw, candidate: nil, accepted: nil)
+                            cleanupFailure = error.localizedDescription
+                            TranscriptDebugLog.write(raw: raw, candidate: nil, accepted: nil,
+                                                     note: "★整形に失敗: \(error.localizedDescription)")
                         }
                     } else {
                         text = raw
-                        TranscriptDebugLog.write(raw: raw, candidate: nil, accepted: nil)
+                        TranscriptDebugLog.write(raw: raw, candidate: nil, accepted: nil,
+                                                 note: cleanupConfig.cleanup_enabled ? "無音（整形にかけない）" : "整形オフ")
                     }
                 case .edit(let selection):
                     // 指示が無音なら何もしない。編集APIが失敗したら throw → エラー表示
@@ -314,10 +321,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         throw error
                     }
                 }
+                let cleanupFailureNote = cleanupFailure
                 await MainActor.run {
                     // Esc で取り消したあとに遅れて返ってきた結果は貼らない
                     guard self.runID == thisRun else { return }
                     self.transcribeTask = nil
+                    if let cleanupFailureNote {
+                        self.lastError = "整形に失敗（生テキストを貼りました）: \(cleanupFailureNote)"
+                    }
                     self.handleTranscription(text)
                 }
             } catch {

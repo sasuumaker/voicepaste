@@ -86,12 +86,14 @@ enum TranscriptDebugLog {
     /// - Parameters:
     ///   - candidate: 整形モデルが返してきた文。整形を通していないときは nil
     ///   - accepted: 検算を通ったか。nil は検算にかけていない（整形オフ／整形が失敗）
-    static func write(raw: String, candidate: String?, accepted: Bool?) {
+    ///   - note: 整形を通していないときの理由（「整形オフ」「★整形に失敗: …」など）。candidate があるときは使わない。
+    ///     以前は理由を書かず「整形オフ、または失敗」の一文だったため、整形モデルの廃止（HTTP 404）に9日間気づけなかった（2026-08-29）
+    static func write(raw: String, candidate: String?, accepted: Bool?, note: String? = nil) {
         var lines = ["  生(\(raw.count)字): \(DebugLog.oneLine(raw, max: 300))"]
         if let candidate {
             lines.append("  整形後(\(candidate.count)字): \(DebugLog.oneLine(candidate, max: 300))")
         } else {
-            lines.append("  整形後: なし（整形オフ、または整形の呼び出しに失敗）")
+            lines.append("  整形後: なし（\(DebugLog.oneLine(note ?? "整形を通していない", max: 300))）")
         }
         switch accepted {
         case true?: lines.append("  判定: 採用")

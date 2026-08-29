@@ -10,7 +10,13 @@ public struct GroqClient {
             case .noAPIKey:
                 return "Groq APIキーが未設定です。~/.config/voicepaste/config.json の groq_api_key に設定してください。"
             case .apiError(let code, let body):
-                return "Groq APIエラー (HTTP \(code)): \(body)"
+                var text = "Groq APIエラー (HTTP \(code)): \(body)"
+                if GroqClient.isRetryable(statusCode: code) {
+                    text += " ／ Groq側の一時的なエラーの可能性があります（\(GroqClient.maxAttempts)回送って全て失敗）。少し待ってもう一度試してください"
+                } else if body.contains("model_not_found") {
+                    text += " ／ このモデルはGroqから廃止された可能性があります。設定画面でモデル名を変えてください"
+                }
+                return text
             }
         }
     }
@@ -177,13 +183,66 @@ public struct GroqClient {
         return pieces.reduce("") { TextJoin.concat($0, $1) }
     }
 
+    // MARK: - 送信と再試行
+
+    /// 同じリクエストを送る回数の上限（初回を含む）
+    public static let maxAttempts = 3
+
+    /// 送り直して直る見込みのある失敗か。
+    /// Groq側の一時エラー（5xx）とレート制限（429）だけ。それ以外の4xx（キー不正・モデル無し・音声不正）は
+    /// 何度送っても同じ結果なので送り直さない
+    public static func isRetryable(statusCode: Int) -> Bool {
+        statusCode == 429 || (500...599).contains(statusCode)
+    }
+
+    /// n回目の失敗のあと、次に送るまでの待ち時間（秒）。1回目0.5秒 → 2回目1秒
+    public static func retryDelay(afterAttempt attempt: Int) -> TimeInterval {
+        0.5 * Double(attempt)
+    }
+
+    /// リクエストを送り、HTTP 200 の本文を返す（transcribe / cleanup / edit 共通）。
+    ///
+    /// 一時的な失敗は少し待って送り直す。2026-08-29 に認識APIが HTTP 500 を返して音声入力が
+    /// その場でエラーになったが、同じ条件のcurlは直後に成功していた＝Groq側の一時エラー。
+    /// 送り直しが無いと1回の失敗でそのまま止まる。
+    /// Escで取り消されたとき（Taskのキャンセル）は送り直さずそのまま抜ける
+    private func send(_ request: URLRequest) async throws -> Data {
+        var attempt = 0
+        while true {
+            attempt += 1
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await URLSession.shared.data(for: request)
+            } catch {
+                // 通信断は送り直す。取り消しはそのまま投げる
+                guard attempt < Self.maxAttempts, !Task.isCancelled, !(error is CancellationError) else { throw error }
+                try await Task.sleep(nanoseconds: UInt64(Self.retryDelay(afterAttempt: attempt) * 1_000_000_000))
+                continue
+            }
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            if code == 200 { return data }
+            let failure = ClientError.apiError(statusCode: code, body: String(data: data, encoding: .utf8) ?? "(no body)")
+            guard attempt < Self.maxAttempts, Self.isRetryable(statusCode: code) else { throw failure }
+            try await Task.sleep(nanoseconds: UInt64(Self.retryDelay(afterAttempt: attempt) * 1_000_000_000))
+        }
+    }
+
+    /// 思考の過程を出すモデルが `<think>…</think>` を本文に混ぜてきたら取り除く。
+    /// Groqの `qwen/qwen3.6-27b` で実測（2026-08-29）。既定の `qwen/qwen3.8-27b` は混ぜないが、
+    /// 設定でモデルを変えたときに思考文がそのまま貼られる事故を防ぐ
+    public static func stripThinking(_ text: String) -> String {
+        var result = text
+        while let open = result.range(of: "<think>"),
+              let close = result.range(of: "</think>", range: open.upperBound..<result.endIndex) {
+            result.removeSubrange(open.lowerBound..<close.upperBound)
+        }
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// chat/completions を叩いて先頭choiceの本文を返す（cleanup / edit 共通）
     private func sendChat(_ request: URLRequest) async throws -> String {
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
-            throw ClientError.apiError(statusCode: code, body: String(data: data, encoding: .utf8) ?? "(no body)")
-        }
+        let data = try await send(request)
         struct ChatResponse: Decodable {
             struct Choice: Decodable {
                 struct Message: Decodable { let content: String }
@@ -195,18 +254,14 @@ public struct GroqClient {
         guard let content = decoded.choices.first?.message.content else {
             throw ClientError.apiError(statusCode: 200, body: "空のレスポンス")
         }
-        return content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Self.stripThinking(content)
     }
 
     public func transcribe(wav: Data) async throws -> String {
         guard !apiKey.isEmpty else { throw ClientError.noAPIKey }
         let boundary = "VoicePaste-\(UUID().uuidString)"
         let request = Self.makeRequest(wav: wav, apiKey: apiKey, model: model, boundary: boundary)
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
-            throw ClientError.apiError(statusCode: code, body: String(data: data, encoding: .utf8) ?? "(no body)")
-        }
+        let data = try await send(request)
         struct TranscriptionResponse: Decodable { let text: String }
         let decoded = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
         return decoded.text.trimmingCharacters(in: .whitespacesAndNewlines)
