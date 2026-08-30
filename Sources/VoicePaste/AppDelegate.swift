@@ -226,6 +226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // ただし黙って出ないと故障に見えるので、理由をポップアップとメニューの両方に出す
             liveCaptionNote = reason
             hud.showCaptionUnavailable(reason)
+            CaptionDebugLog.writeUnavailable(reason: reason)
             return
         }
         liveTranscriber = transcriber

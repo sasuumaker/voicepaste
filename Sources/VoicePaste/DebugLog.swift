@@ -74,6 +74,20 @@ enum CaptionDebugLog {
             """
         DebugLog.prepend(entry, to: "caption-debug.log", limit: 10_000)
     }
+
+    /// 部分結果が1件も来ないまま録音が終わった。
+    /// 以前はこの場合に何も残らず、字幕が出ない原因（短すぎ／認識停止）を後から切り分けられなかった（2026-08-30）
+    static func writeEmpty(seconds: TimeInterval, restartCount: Int) {
+        let entry = String(format: "[%@] ★字幕なし（部分結果0件）録音 %.1f秒 / 張り直し %d回\n\n",
+                           DebugLog.timestamp(), seconds, restartCount)
+        DebugLog.prepend(entry, to: "caption-debug.log", limit: 30_000)
+    }
+
+    /// 字幕を始められなかった（権限なし・認識が利用不可・端末内で認識できない言語）
+    static func writeUnavailable(reason: String) {
+        let entry = "[\(DebugLog.timestamp())] ★字幕を開始できず: \(DebugLog.oneLine(reason, max: 120))\n\n"
+        DebugLog.prepend(entry, to: "caption-debug.log", limit: 30_000)
+    }
 }
 
 /// 認識と整形の診断ログ（~/.config/voicepaste/transcript-debug.log）。
