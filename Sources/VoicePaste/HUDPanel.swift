@@ -11,8 +11,8 @@ import Foundation
 /// 伸びる上限に達したら、そこから先は古い方を落として最新側を残す。
 final class HUDPanel {
     enum State {
-        case recording(hint: String)
-        case editRecording(hint: String)
+        case recording(hint: String, mic: String?)
+        case editRecording(hint: String, mic: String?)
         case transcribing
         case result(String)
         case info(String)
@@ -42,10 +42,11 @@ final class HUDPanel {
 
     // MARK: - 公開API
 
-    func showRecording(isEdit: Bool, hint: String) {
+    /// - Parameter mic: 録音に使っているマイクの名前。AirPodsをつないでいても内蔵で録っていることが一目で分かるように出す
+    func showRecording(isEdit: Bool, hint: String, mic: String? = nil) {
         recordingStartedAt = Date()
         meter.reset()
-        setState(isEdit ? .editRecording(hint: hint) : .recording(hint: hint))
+        setState(isEdit ? .editRecording(hint: hint, mic: mic) : .recording(hint: hint, mic: mic))
         setText(isEdit ? "編集の指示をどうぞ…" : "どうぞ…", dimmed: true)
         show()
         startElapsedTimer()
@@ -130,11 +131,11 @@ final class HUDPanel {
 
     private func setState(_ state: State) {
         switch state {
-        case .recording(let hint):
-            stateLabel.stringValue = "● 録音中   0:00   \(hint) で停止 ／ ⎋ で取り消し"
+        case .recording(let hint, let mic):
+            stateLabel.stringValue = "● 録音中   0:00   \(hint) で停止 ／ ⎋ で取り消し" + Self.micSuffix(mic)
             stateLabel.textColor = .systemRed
-        case .editRecording(let hint):
-            stateLabel.stringValue = "● 編集指示を録音中   0:00   \(hint) で確定 ／ ⎋ で取り消し"
+        case .editRecording(let hint, let mic):
+            stateLabel.stringValue = "● 編集指示を録音中   0:00   \(hint) で確定 ／ ⎋ で取り消し" + Self.micSuffix(mic)
             stateLabel.textColor = .systemOrange
         case .transcribing:
             stateLabel.stringValue = "認識中…   ⎋ で取り消し"
@@ -152,6 +153,11 @@ final class HUDPanel {
             stateLabel.stringValue = "⚠️ エラー"
             stateLabel.textColor = .systemOrange
         }
+    }
+
+    private static func micSuffix(_ mic: String?) -> String {
+        guard let mic, !mic.isEmpty else { return "" }
+        return "   🎤 \(mic)"
     }
 
     private func setText(_ text: String, dimmed: Bool) {

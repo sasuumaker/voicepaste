@@ -20,6 +20,9 @@ public struct Config: Codable {
     /// 既定の false では文字を直接キー入力として送るので、クリップボードとその履歴アプリを汚さない。
     /// 文字が化ける・取りこぼすアプリがあった場合の逃げ道として true にできる
     public var paste_via_clipboard: Bool
+    /// 録音に使うマイク。`builtin`（Macの内蔵・既定）/ `system`（macOSの設定に従う）/ 機器のUID。
+    /// AirPodsをつなぐとmacOSの既定入力がAirPodsになり認識精度が落ちるので、既定はmacOSに従わない
+    public var input_device: String
 
     public init(
         groq_api_key: String,
@@ -32,7 +35,8 @@ public struct Config: Codable {
         hud_enabled: Bool,
         live_caption_enabled: Bool,
         live_caption_locale: String,
-        paste_via_clipboard: Bool
+        paste_via_clipboard: Bool,
+        input_device: String = InputDeviceSelection.builtIn
     ) {
         self.groq_api_key = groq_api_key
         self.model = model
@@ -45,6 +49,7 @@ public struct Config: Codable {
         self.live_caption_enabled = live_caption_enabled
         self.live_caption_locale = live_caption_locale
         self.paste_via_clipboard = paste_via_clipboard
+        self.input_device = input_device
     }
 
     /// 古い config.json に無いキーはデフォルト値で埋める（後方互換）
@@ -63,6 +68,7 @@ public struct Config: Codable {
         live_caption_enabled = try container.decodeIfPresent(Bool.self, forKey: .live_caption_enabled) ?? def.live_caption_enabled
         live_caption_locale = try container.decodeIfPresent(String.self, forKey: .live_caption_locale) ?? def.live_caption_locale
         paste_via_clipboard = try container.decodeIfPresent(Bool.self, forKey: .paste_via_clipboard) ?? def.paste_via_clipboard
+        input_device = try container.decodeIfPresent(String.self, forKey: .input_device) ?? def.input_device
     }
 
     /// Groqから廃止された整形モデル。config.json に残っていたら読み込み時に既定へ置き換える。
@@ -85,7 +91,8 @@ public struct Config: Codable {
         hud_enabled: true,
         live_caption_enabled: true,
         live_caption_locale: "ja-JP",
-        paste_via_clipboard: false
+        paste_via_clipboard: false,
+        input_device: InputDeviceSelection.builtIn
     )
 
     public static var configURL: URL {

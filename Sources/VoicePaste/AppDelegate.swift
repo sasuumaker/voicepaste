@@ -28,6 +28,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// リアルタイム字幕が出せなかった理由。録音の成否とは別なので lastError と混ぜない
     private var liveCaptionNote: String?
     private var liveTranscriber: LiveTranscriber?
+    /// いま（直近）の録音に使ったマイクの名前。ポップアップ・メニュー・診断ログに出す
+    private var currentMicName: String?
+    /// 設定どおりのマイクを使えなかった理由（設定したマイクが未接続など）。使えていれば nil
+    private var micNote: String?
     private lazy var settingsController = SettingsWindowController(config: config)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -185,10 +189,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let isEdit: Bool
         if case .edit = recordingMode { isEdit = true } else { isEdit = false }
 
+        // 録音に使うマイクは毎回決め直す（AirPodsのつなぎ外しで一覧が変わるため）
+        let devices = AudioInputDevices.list()
+        let mic = InputDeviceSelection.resolve(setting: config.input_device, devices: devices.map(\.info))
+        let deviceID = devices.first { $0.info.uid == mic.device?.uid }?.id
+        currentMicName = mic.device?.name
+        micNote = mic.note
+
         if config.hud_enabled {
             hud.showRecording(
                 isEdit: isEdit,
-                hint: hotkeySymbol(isEdit ? config.hotkey_edit : config.hotkey_toggle)
+                hint: hotkeySymbol(isEdit ? config.hotkey_edit : config.hotkey_toggle),
+                mic: currentMicName
             )
             recorder.onLevel = { [weak self] level in self?.hud.updateLevel(level) }
         } else {
@@ -198,7 +210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         do {
             // 開始音はマイクが実際に生きてから鳴らす（ポンが鳴ったら喋ってOKの合図）
-            try recorder.start(onCaptureLive: {
+            try recorder.start(deviceID: deviceID, onCaptureLive: {
                 NSSound(named: "Pop")?.play()
             })
             isRecording = true
@@ -273,6 +285,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let client = GroqClient(apiKey: apiKey, model: config.model)
         let cleanupConfig = config
         let mode = recordingMode
+        let micName = currentMicName.map { String(format: "%@（音量ピーク %.2f）", $0, recorder.lastPeak) }
         runID += 1
         let thisRun = runID
         transcribeTask = Task {
@@ -291,18 +304,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             let result = try await cleaner.cleanup(text: raw)
                             text = result.text
                             TranscriptDebugLog.write(
-                                raw: raw, candidate: result.candidate, accepted: result.accepted
+                                raw: raw, candidate: result.candidate, accepted: result.accepted, mic: micName
                             )
                         } catch {
                             text = raw
                             cleanupFailure = error.localizedDescription
                             TranscriptDebugLog.write(raw: raw, candidate: nil, accepted: nil,
-                                                     note: "★整形に失敗: \(error.localizedDescription)")
+                                                     note: "★整形に失敗: \(error.localizedDescription)", mic: micName)
                         }
                     } else {
                         text = raw
                         TranscriptDebugLog.write(raw: raw, candidate: nil, accepted: nil,
-                                                 note: cleanupConfig.cleanup_enabled ? "無音（整形にかけない）" : "整形オフ")
+                                                 note: cleanupConfig.cleanup_enabled ? "無音（整形にかけない）" : "整形オフ", mic: micName)
                     }
                 case .edit(let selection):
                     // 指示が無音なら何もしない。編集APIが失敗したら throw → エラー表示
@@ -446,6 +459,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let note = liveCaptionNote {
             let item = NSMenuItem(title: "字幕オフ: \(String(note.prefix(60)))", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
+
+        let micItem = NSMenuItem(title: "🎤 マイク: \(currentMicName ?? "（次の録音で決まります）")", action: nil, keyEquivalent: "")
+        micItem.isEnabled = false
+        menu.addItem(micItem)
+        if let micNote {
+            let item = NSMenuItem(title: "⚠️ \(String(micNote.prefix(60)))", action: nil, keyEquivalent: "")
             item.isEnabled = false
             menu.addItem(item)
         }
