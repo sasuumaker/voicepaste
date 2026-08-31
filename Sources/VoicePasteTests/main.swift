@@ -93,11 +93,11 @@ if let bodyData = request.httpBody {
 }
 
 print("GroqClient.makeChatRequest")
-let chatRequest = GroqClient.makeChatRequest(text: "こんにちはテストです", apiKey: "test-key", model: "llama-3.3-70b-versatile")
+let chatRequest = GroqClient.makeChatRequest(text: "こんにちはテストです", apiKey: "test-key", model: "qwen/qwen3.8-27b")
 expect(chatRequest.url?.absoluteString == "https://api.groq.com/openai/v1/chat/completions", "chat endpoint URL")
 expect(chatRequest.value(forHTTPHeaderField: "Authorization") == "Bearer test-key", "chat auth header")
 if let chatBodyData = chatRequest.httpBody, let chatBody = try? JSONSerialization.jsonObject(with: chatBodyData) as? [String: Any] {
-    expect(chatBody["model"] as? String == "llama-3.3-70b-versatile", "chat model field")
+    expect(chatBody["model"] as? String == "qwen/qwen3.8-27b", "chat model field")
     expect(chatBody["temperature"] as? Int == 0, "temperature 0")
     let messages = chatBody["messages"] as? [[String: Any]] ?? []
     expect(messages.count == 2, "system + user messages")
@@ -271,12 +271,12 @@ let editRequest = GroqClient.makeEditRequest(
     selection: "牛乳を買う 卵 パン",
     instruction: "これをリストにして",
     apiKey: "test-key",
-    model: "llama-3.3-70b-versatile"
+    model: "qwen/qwen3.8-27b"
 )
 expect(editRequest.url?.absoluteString == "https://api.groq.com/openai/v1/chat/completions", "edit endpoint URL")
 expect(editRequest.value(forHTTPHeaderField: "Authorization") == "Bearer test-key", "edit auth header")
 if let editBodyData = editRequest.httpBody, let editBody = try? JSONSerialization.jsonObject(with: editBodyData) as? [String: Any] {
-    expect(editBody["model"] as? String == "llama-3.3-70b-versatile", "edit model field")
+    expect(editBody["model"] as? String == "qwen/qwen3.8-27b", "edit model field")
     expect(editBody["temperature"] as? Int == 0, "edit temperature 0")
     let messages = editBody["messages"] as? [[String: Any]] ?? []
     expect(messages.count == 2, "edit system + user messages")
@@ -293,6 +293,31 @@ if let editBodyData = editRequest.httpBody, let editBody = try? JSONSerializatio
     expect(false, "edit httpBody is valid JSON")
 }
 
+print("GroqClient 再試行の判定")
+expect(GroqClient.maxAttempts == 3, "送る回数は最大3回")
+expect(GroqClient.isRetryable(statusCode: 500), "HTTP 500（Groq側の一時エラー）は送り直す")
+expect(GroqClient.isRetryable(statusCode: 503), "HTTP 503 は送り直す")
+expect(GroqClient.isRetryable(statusCode: 429), "HTTP 429（レート制限）は送り直す")
+expect(!GroqClient.isRetryable(statusCode: 404), "HTTP 404（モデル無し）は送り直さない")
+expect(!GroqClient.isRetryable(statusCode: 401), "HTTP 401（キー不正）は送り直さない")
+expect(!GroqClient.isRetryable(statusCode: 400), "HTTP 400（リクエスト不正）は送り直さない")
+expect(!GroqClient.isRetryable(statusCode: 200), "HTTP 200 は送り直さない")
+expect(GroqClient.retryDelay(afterAttempt: 1) == 0.5, "1回目の失敗のあとは0.5秒待つ")
+expect(GroqClient.retryDelay(afterAttempt: 2) == 1.0, "2回目の失敗のあとは1秒待つ")
+let transient = GroqClient.ClientError.apiError(statusCode: 500, body: "{\"error\":{\"message\":\"Internal Server Error\"}}")
+expect(transient.errorDescription?.contains("一時的なエラー") == true, "5xx の文言に一時的なエラーの可能性を添える")
+let retired = GroqClient.ClientError.apiError(statusCode: 404, body: "{\"error\":{\"code\":\"model_not_found\"}}")
+expect(retired.errorDescription?.contains("廃止") == true, "model_not_found の文言にモデル廃止の可能性を添える")
+expect(retired.errorDescription?.contains("一時的なエラー") == false, "404 に一時的なエラーの文言は付けない")
+
+print("GroqClient.stripThinking（思考文の除去）")
+expect(GroqClient.stripThinking("<think>\nまず句読点を…\n</think>\n現在のタスク管理をお願いします。") == "現在のタスク管理をお願いします。",
+       "先頭の <think>…</think> を取り除く")
+expect(GroqClient.stripThinking("現在のタスク管理をお願いします。") == "現在のタスク管理をお願いします。",
+       "思考文が無ければそのまま")
+expect(GroqClient.stripThinking("<think>a</think>本文<think>b</think>") == "本文", "複数あっても全部取り除く")
+expect(GroqClient.stripThinking("<think>途中で切れた") == "<think>途中で切れた", "閉じタグが無ければ触らない")
+
 print("Config")
 let defaultConfig = Config.default
 expect(defaultConfig.model == "whisper-large-v3-turbo", "default model")
@@ -300,7 +325,7 @@ expect(HotKeySpec.parse(defaultConfig.hotkey_toggle) != nil, "default toggle hot
 expect(HotKeySpec.parse(defaultConfig.hotkey_paste_last) != nil, "default paste-last hotkey parseable")
 expect(HotKeySpec.parse(defaultConfig.hotkey_edit) != nil, "default edit hotkey parseable")
 expect(defaultConfig.cleanup_enabled == true, "cleanup enabled by default")
-expect(defaultConfig.cleanup_model == "llama-3.3-70b-versatile", "default cleanup model")
+expect(defaultConfig.cleanup_model == "qwen/qwen3.8-27b", "default cleanup model")
 expect(defaultConfig.hud_enabled == true, "hud on by default")
 expect(defaultConfig.live_caption_enabled == true, "live caption on by default")
 expect(defaultConfig.live_caption_locale == "ja-JP", "default caption locale")
@@ -318,6 +343,24 @@ expect(reordered.duplicatedHotkey == nil, "same combo written differently is not
 reordered.hotkey_edit = "cmd+ctrl+v"
 expect(reordered.duplicatedHotkey == "⌃⌘V", "duplicate detected across different spellings")
 
+// 廃止された整形モデルが config.json に残っていたら、読み込み時に既定へ置き換える
+let retiredJSON = """
+{"groq_api_key":"k","cleanup_model":"llama-3.3-70b-versatile"}
+"""
+if let migrated = try? JSONDecoder().decode(Config.self, from: Data(retiredJSON.utf8)) {
+    expect(migrated.cleanup_model == Config.default.cleanup_model, "廃止モデル llama-3.3-70b-versatile は既定へ置き換える")
+} else {
+    expect(false, "retired-model config decodes")
+}
+let customJSON = """
+{"groq_api_key":"k","cleanup_model":"openai/gpt-oss-120b"}
+"""
+if let custom = try? JSONDecoder().decode(Config.self, from: Data(customJSON.utf8)) {
+    expect(custom.cleanup_model == "openai/gpt-oss-120b", "廃止でないモデル名はそのまま残す")
+} else {
+    expect(false, "custom-model config decodes")
+}
+
 // 旧バージョンのconfig（cleanup系キーなし）を読んでもAPIキーが消えない
 let legacyJSON = """
 {"groq_api_key":"legacy-key","model":"whisper-large-v3-turbo","hotkey_toggle":"option+space","hotkey_paste_last":"ctrl+cmd+v"}
@@ -325,7 +368,7 @@ let legacyJSON = """
 if let legacy = try? JSONDecoder().decode(Config.self, from: Data(legacyJSON.utf8)) {
     expect(legacy.groq_api_key == "legacy-key", "legacy config keeps api key")
     expect(legacy.cleanup_enabled == true, "legacy config gets cleanup default")
-    expect(legacy.cleanup_model == "llama-3.3-70b-versatile", "legacy config gets cleanup model default")
+    expect(legacy.cleanup_model == "qwen/qwen3.8-27b", "legacy config gets cleanup model default")
     expect(legacy.hotkey_edit == "ctrl+slash", "legacy config gets edit hotkey default")
     expect(legacy.hotkey_toggle == "option+space", "legacy config keeps its own toggle hotkey")
     expect(legacy.hud_enabled == true, "legacy config gets hud default")

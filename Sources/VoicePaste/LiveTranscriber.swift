@@ -29,6 +29,10 @@ final class LiveTranscriber {
     private let lock = NSLock()
     /// 認識結果の推移。録音を止めたときにまとめてログへ流す（毎回書くと重いので溜めておく）
     private var trace: [String] = []
+    /// 字幕を始めた時刻。「最初の部分結果まで何秒かかったか」「1件も来ないまま何秒録音したか」を測るため。
+    /// 2026-08-30 に字幕が何も出なくなったとき、部分結果0件の録音はログに何も残らず、
+    /// 認識が遅かったのか止まっていたのかを切り分けられなかった
+    private var startedAt = Date()
 
     /// 認識が一度も実を結ばないまま張り直し続けた場合の歯止め。
     /// 部分結果が1つでも返ったら 0 に戻すので、普通に喋っている限り上限には当たらない
@@ -78,6 +82,7 @@ final class LiveTranscriber {
         finalizedText = ""
         currentText = ""
         restartCount = 0
+        startedAt = Date()
         running = true
         beginTask(on: recognizer)
         return nil
@@ -127,6 +132,9 @@ final class LiveTranscriber {
         let text = transcription.formattedString
         let segmentStart = transcription.segments.first?.timestamp ?? 0
 
+        if trace.isEmpty {
+            note(String(format: "最初の部分結果まで %.2f秒", Date().timeIntervalSince(startedAt)))
+        }
         if isNewUtterance(segmentStart: segmentStart, text: text) {
             finalizedText = TextJoin.concat(finalizedText, currentText)
             currentText = ""
@@ -191,6 +199,10 @@ final class LiveTranscriber {
         if !trace.isEmpty {
             CaptionDebugLog.writeTrace(trace, finalText: TextJoin.concat(finalizedText, currentText))
             trace.removeAll()
+        } else {
+            // 部分結果が1件も来なかった録音も残す。短すぎて間に合わなかったのか、認識が止まっていたのかを
+            // 録音秒数で切り分ける（1秒の録音で0件は正常、5秒で0件は異常）
+            CaptionDebugLog.writeEmpty(seconds: Date().timeIntervalSince(startedAt), restartCount: restartCount)
         }
         lock.lock()
         request?.endAudio()

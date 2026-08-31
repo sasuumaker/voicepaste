@@ -57,13 +57,23 @@ public struct Config: Codable {
         hotkey_paste_last = try container.decodeIfPresent(String.self, forKey: .hotkey_paste_last) ?? def.hotkey_paste_last
         hotkey_edit = try container.decodeIfPresent(String.self, forKey: .hotkey_edit) ?? def.hotkey_edit
         cleanup_enabled = try container.decodeIfPresent(Bool.self, forKey: .cleanup_enabled) ?? def.cleanup_enabled
-        cleanup_model = try container.decodeIfPresent(String.self, forKey: .cleanup_model) ?? def.cleanup_model
+        let storedCleanupModel = try container.decodeIfPresent(String.self, forKey: .cleanup_model) ?? def.cleanup_model
+        cleanup_model = Config.retiredCleanupModels.contains(storedCleanupModel) ? def.cleanup_model : storedCleanupModel
         hud_enabled = try container.decodeIfPresent(Bool.self, forKey: .hud_enabled) ?? def.hud_enabled
         live_caption_enabled = try container.decodeIfPresent(Bool.self, forKey: .live_caption_enabled) ?? def.live_caption_enabled
         live_caption_locale = try container.decodeIfPresent(String.self, forKey: .live_caption_locale) ?? def.live_caption_locale
         paste_via_clipboard = try container.decodeIfPresent(Bool.self, forKey: .paste_via_clipboard) ?? def.paste_via_clipboard
     }
 
+    /// Groqから廃止された整形モデル。config.json に残っていたら読み込み時に既定へ置き換える。
+    /// `llama-3.3-70b-versatile` は 2026-08 に廃止され（HTTP 404 model_not_found）、
+    /// 気づかないまま9日間、整形が黙って失敗して生テキストがそのまま貼られていた（2026-08-29 発見）
+    public static let retiredCleanupModels: Set<String> = ["llama-3.3-70b-versatile"]
+
+    /// 整形モデルの既定は `qwen/qwen3.8-27b`。
+    /// 2026-08-29 の実測（同じ整形プロンプト・日英3サンプル）で、0.4〜0.5秒・出力に思考文が混ざらず・
+    /// 句読点とフィラー除去が正しかった。`openai/gpt-oss-120b` は結果は良いが1秒超、
+    /// `openai/gpt-oss-20b` は空応答が出た、`qwen/qwen3.6-27b` は `<think>` が本文に混ざった
     public static let `default` = Config(
         groq_api_key: "",
         model: "whisper-large-v3-turbo",
@@ -71,7 +81,7 @@ public struct Config: Codable {
         hotkey_paste_last: "ctrl+cmd+v",
         hotkey_edit: "ctrl+slash",
         cleanup_enabled: true,
-        cleanup_model: "llama-3.3-70b-versatile",
+        cleanup_model: "qwen/qwen3.8-27b",
         hud_enabled: true,
         live_caption_enabled: true,
         live_caption_locale: "ja-JP",
