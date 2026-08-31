@@ -23,6 +23,7 @@ Aqua Voice相当のmacOS音声入力アプリ（個人利用・自作）。
 | 8 | リアルタイム字幕 | ポップアップに喋っている内容を逐次表示。macOS内蔵のオンデバイス認識を使う（Groqへの追加課金なし・音声は外部に出ない）。`live_caption_enabled: false` でオフ |
 | 9 | 設定画面 | メニューバー →「設定…」。ショートカットは欄をクリックして実際にキーを押して登録。保存すると**アプリ再起動なしで即反映** |
 | 10 | 途中で取り消し | 録音中・認識中に `Esc` を押すと、録った音も認識結果も捨てて何も貼らずに待機へ戻る。Escを奪うのはその数秒だけ |
+| 11 | マイクの選択 | 録音に使うマイクを設定で選べる。既定は**Macの内蔵マイク**（AirPodsをつないでmacOSの既定入力がAirPodsになっても内蔵で録る。AirPodsのマイクは認識精度が大きく落ちるため・本人実感 2026-08-30）。`input_device` = `builtin` / `system`（macOSの設定に従う）/ 機器のUID。設定画面の「マイク」欄はつながっている機器を毎回取り直して一覧にする。設定した機器が未接続なら内蔵に戻し、理由をメニューに出す。録音中のポップアップ・メニュー・診断ログに使っているマイク名を出す |
 
 ## デフォルト設定（`~/.config/voicepaste/config.json`）
 
@@ -38,11 +39,15 @@ Aqua Voice相当のmacOS音声入力アプリ（個人利用・自作）。
   "hud_enabled": true,
   "live_caption_enabled": true,
   "live_caption_locale": "ja-JP",
-  "paste_via_clipboard": false
+  "paste_via_clipboard": false,
+  "input_device": "builtin"
 }
 ```
 
 - 古いconfig.jsonにキーが欠けていてもデフォルト値で補完される（後方互換）
+- `input_device` は録音に使うマイク。`builtin`（既定・Macの内蔵マイク）/ `system`（macOSの「サウンド」設定の入力に従う）/
+  機器のUID（設定画面で機器名を選ぶと保存される）。決め方は `InputDeviceSelection.resolve`（Core・テスト済み）:
+  内蔵指定で内蔵が無ければmacOSの既定へ、UID指定で未接続なら内蔵へ、それも無ければmacOSの既定へ。設定どおりでないときは理由を添える
 - config.json に**廃止された整形モデル**（`llama-3.3-70b-versatile`）が残っていたら、読み込み時に既定へ置き換える
   （`Config.retiredCleanupModels`）。2026-08 にGroqがこのモデルを廃止し（HTTP 404 model_not_found）、
   整形が9日間黙って失敗していた（2026-08-29 発見）。既定の `qwen/qwen3.8-27b` は同日の実測で
@@ -63,12 +68,14 @@ Sources/
 │   ├── Config.swift         # 設定の読み書き（~/.config/voicepaste/config.json）
 │   ├── HotKeySpec.swift     # "ctrl+cmd+v" → Carbonキーコード変換
 │   ├── WAV.swift            # Float32サンプル → 16bit PCM WAVエンコード
+│   ├── InputDeviceSelection.swift # 設定値とつながっている機器から、録音に使うマイクを決める（純粋関数）
 │   └── GroqClient.swift     # Groq transcriptions API（multipart POST）
 ├── VoicePaste/              # メニューバーアプリ本体
 │   ├── main.swift           # エントリポイント（accessory app）
 │   ├── AppDelegate.swift    # 状態管理・メニュー・録音フロー
 │   ├── HotKeyManager.swift  # Carbon RegisterEventHotKey（権限不要）・全解除して再登録も可
-│   ├── AudioRecorder.swift  # AVAudioEngine → 16kHzモノラル変換・音量とバッファを外へ流す
+│   ├── AudioRecorder.swift  # AVAudioEngine → 16kHzモノラル変換・音量とバッファを外へ流す。マイクは音声ユニットに直接指定
+│   ├── AudioInputDevices.swift # CoreAudioで入力機器の一覧（名前・UID・内蔵か・macOSの既定か）を取る
 │   ├── HUDPanel.swift       # 画面下のポップアップ（状態・音量メーター・字幕）
 │   ├── LiveTranscriber.swift # 録音中の逐次表示（Speech framework・オンデバイス限定）
 │   ├── SettingsWindow.swift # 設定画面 + キーを押して登録する入力欄
@@ -80,6 +87,9 @@ Sources/
 ### 録音→貼り付けフロー
 
 1. ホットキー → `AudioRecorder.start()`。開始音（Pop）は最初の音声バッファ到着後に鳴らす＝鳴った時点で確実に録音中（喋り出し欠け防止）
+   - 録音のたびに `AudioInputDevices.list()` で機器一覧を取り直し、`InputDeviceSelection.resolve` で使うマイクを決める。
+     `AVAudioEngine` はそのままだとmacOSの既定入力を使うので、入力ノードの音声ユニットに
+     `kAudioOutputUnitProperty_CurrentDevice` で機器を指定してから形式を読む（機器ごとにサンプルレートが違う）
 2. ホットキー再押下 → `stop()` → WAV化（0.3秒未満は誤爆として破棄）
 3. `GroqClient.transcribe()` に multipart POST（言語指定なし＝自動判定）
    - **`prompt` に話し言葉のヒントを添える**（`GroqClient.transcriptionHint`）。発話の先頭で単独に立つ
@@ -227,6 +237,9 @@ Clipy や Paste のようなクリップボード履歴アプリを使ってい�
 `CleanupGuard` が破棄した回は `判定: ★破棄` で残るので、歯止めが実際に何回効いているかも数えられる。
 整形を通していない回は `整形後: なし（整形オフ）` / `なし（無音）` / `なし（★整形に失敗: <理由>）` と理由まで残す。
 `grep 整形に失敗 transcript-debug.log` で、整形が壊れていないかをいつでも確かめられる。
+各回に `マイク: <機器名>（音量ピーク 0.04）` も残す。ピークが 0.00 なら選んだマイクが音を拾っていない（未接続・ミュート・仮想機器）。
+マイク指定が効いていることはこの値で確かめた（2026-08-30: 内蔵指定でスピーカーの合成音声を認識できる／
+無音の仮想機器 BlackHole を指定するとピーク 0.00・字幕0件・Whisperは無音の幻聴「ご視聴ありがとうございました」を返す）。
 
 字幕の診断ログ `caption-debug.log` には、1回の録音ごとの部分結果の推移（`最初の部分結果まで N秒` を先頭に）を残す。
 部分結果が1件も来なかった録音は `★字幕なし（部分結果0件）録音 N秒` として、字幕を始められなかったときは

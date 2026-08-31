@@ -112,7 +112,8 @@ never at risk of being committed. The settings window writes the same file.
   "hud_enabled": true,
   "live_caption_enabled": true,
   "live_caption_locale": "ja-JP",
-  "paste_via_clipboard": false
+  "paste_via_clipboard": false,
+  "input_device": "builtin"
 }
 ```
 
@@ -121,6 +122,9 @@ The key is read from `groq_api_key` first, then the `GROQ_API_KEY` environment v
 to paste exactly what Whisper heard. `live_caption_locale` only affects the on-screen caption — the
 pasted text always comes from Whisper's own language detection. `paste_via_clipboard` is the escape
 hatch back to copy-and-`⌘V`, for apps that do not accept synthesised keystrokes cleanly.
+`input_device` picks the microphone: `builtin` (default — the Mac's built-in mic, even while AirPods are
+connected, because AirPods mics hurt recognition accuracy), `system` (follow macOS's input setting), or a
+device UID chosen from the Settings window.
 
 ## Cost
 
@@ -252,7 +256,8 @@ open build/VoicePaste.app
   "hud_enabled": true,
   "live_caption_enabled": true,
   "live_caption_locale": "ja-JP",
-  "paste_via_clipboard": false
+  "paste_via_clipboard": false,
+  "input_device": "builtin"
 }
 ```
 
@@ -261,6 +266,7 @@ APIキーは `groq_api_key` を先に見て、無ければ環境変数 `GROQ_API
 オフにすると、認識したままの文章が貼られます。`live_caption_locale` は画面に出す字幕だけに効く設定で、
 貼り付ける文章は常にWhisperの言語自動判定に従います。`paste_via_clipboard` は、キー入力をうまく
 受け取れないアプリがあったときに、従来のコピー＆`⌘V` へ戻すための逃げ道です。
+`input_device` は録音に使うマイクです。`builtin`（既定。AirPodsをつないでいてもMacの内蔵マイクで録ります。AirPodsのマイクは認識精度が落ちるため）、`system`（macOSのサウンド設定に従う）、または設定画面で選んだ機器のUIDです。
 
 ## 費用
 

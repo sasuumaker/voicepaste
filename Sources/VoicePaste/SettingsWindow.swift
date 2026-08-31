@@ -17,6 +17,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let localePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let apiKeyField = NSSecureTextField(frame: .zero)
     private let cleanupCheckbox = NSButton(checkboxWithTitle: "認識したあと句読点を整える", target: nil, action: nil)
+    private let micPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    /// micPopup の各項目に対応する設定値（`builtin` / `system` / 機器のUID）
+    private var micChoices: [String] = []
 
     /// 保存が押されたとき。呼び出し側で config を保存してホットキーを付け替える
     var onSave: ((Config) -> Void)?
@@ -56,7 +59,29 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         cleanupCheckbox.state = config.cleanup_enabled ? .on : .off
         let index = Self.locales.firstIndex { $0.identifier == config.live_caption_locale } ?? 0
         localePopup.selectItem(at: index)
+        reloadMicChoices()
         updateWarning()
+    }
+
+    /// マイクの一覧は設定画面を開くたびに取り直す（AirPodsのつなぎ外しで変わるため）
+    private func reloadMicChoices() {
+        let devices = AudioInputDevices.list().map(\.info)
+        let systemName = devices.first { $0.isSystemDefault }?.name ?? "不明"
+        var titles = ["Macの内蔵マイク（既定）", "macOSのサウンド設定に従う（いま: \(systemName)）"]
+        var choices = [InputDeviceSelection.builtIn, InputDeviceSelection.followSystem]
+        for device in devices where !device.isBuiltIn {
+            titles.append(device.name)
+            choices.append(device.uid)
+        }
+        let current = config.input_device.isEmpty ? InputDeviceSelection.builtIn : config.input_device
+        if !choices.contains(current) {
+            titles.append("設定済みのマイク（いま未接続）")
+            choices.append(current)
+        }
+        micPopup.removeAllItems()
+        micPopup.addItems(withTitles: titles)
+        micChoices = choices
+        micPopup.selectItem(at: choices.firstIndex(of: current) ?? 0)
     }
 
     private func collectValues() -> Config {
@@ -71,6 +96,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let index = localePopup.indexOfSelectedItem
         if index >= 0, index < Self.locales.count {
             updated.live_caption_locale = Self.locales[index].identifier
+        }
+        let micIndex = micPopup.indexOfSelectedItem
+        if micIndex >= 0, micIndex < micChoices.count {
+            updated.input_device = micChoices[micIndex]
         }
         return updated
     }
@@ -110,7 +139,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     private func makeWindow() -> NSWindow {
         let contentWidth: CGFloat = 540
-        let contentHeight: CGFloat = 470
+        let contentHeight: CGFloat = 560
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: contentWidth, height: contentHeight),
             styleMask: [.titled, .closable],
@@ -146,45 +175,55 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             content.addSubview(control)
         }
 
-        section("ショートカットキー", y: 428)
-        row("音声入力（開始・停止）", control: toggleRecorder, y: 396, height: 26)
-        row("直前の内容をもう一度貼る", control: pasteLastRecorder, y: 362, height: 26)
-        row("選んだ文章を音声で書き換える", control: editRecorder, y: 328, height: 26)
+        section("ショートカットキー", y: 518)
+        row("音声入力（開始・停止）", control: toggleRecorder, y: 486, height: 26)
+        row("直前の内容をもう一度貼る", control: pasteLastRecorder, y: 452, height: 26)
+        row("選んだ文章を音声で書き換える", control: editRecorder, y: 418, height: 26)
 
         warningLabel.font = .systemFont(ofSize: 11)
         // 注意書きは日本語だと横に長くなるので、右カラムではなく本文幅いっぱいを使う
-        warningLabel.frame = NSRect(x: labelX, y: 306, width: contentWidth - labelX * 2, height: 16)
+        warningLabel.frame = NSRect(x: labelX, y: 396, width: contentWidth - labelX * 2, height: 16)
         warningLabel.alignment = .right
         warningLabel.lineBreakMode = .byTruncatingTail
         content.addSubview(warningLabel)
 
-        section("画面の表示", y: 268)
-        hudCheckbox.frame = NSRect(x: controlX, y: 240, width: controlWidth + 20, height: 20)
+        section("画面の表示", y: 358)
+        hudCheckbox.frame = NSRect(x: controlX, y: 330, width: controlWidth + 20, height: 20)
         hudCheckbox.font = .systemFont(ofSize: 12)
         content.addSubview(hudCheckbox)
-        captionCheckbox.frame = NSRect(x: controlX, y: 216, width: controlWidth + 20, height: 20)
+        captionCheckbox.frame = NSRect(x: controlX, y: 306, width: controlWidth + 20, height: 20)
         captionCheckbox.font = .systemFont(ofSize: 12)
         content.addSubview(captionCheckbox)
 
         localePopup.removeAllItems()
         localePopup.addItems(withTitles: Self.locales.map(\.title))
-        row("その場で見せる文字の言語", control: localePopup, y: 182, height: 25)
+        row("その場で見せる文字の言語", control: localePopup, y: 272, height: 25)
 
         let localeNote = NSTextField(labelWithString: "確定する文章はGroqが言語を自動判定するので、ここは表示用です")
         localeNote.font = .systemFont(ofSize: 11)
         localeNote.textColor = .tertiaryLabelColor
-        localeNote.frame = NSRect(x: labelX, y: 162, width: contentWidth - labelX * 2, height: 16)
+        localeNote.frame = NSRect(x: labelX, y: 252, width: contentWidth - labelX * 2, height: 16)
         localeNote.alignment = .right
         localeNote.lineBreakMode = .byTruncatingTail
         content.addSubview(localeNote)
 
-        section("音声認識", y: 124)
+        section("音声認識", y: 214)
         apiKeyField.placeholderString = "gsk_..."
         apiKeyField.font = .systemFont(ofSize: 12)
-        row("Groq APIキー", control: apiKeyField, y: 92, height: 24)
-        cleanupCheckbox.frame = NSRect(x: controlX, y: 64, width: controlWidth + 20, height: 20)
+        row("Groq APIキー", control: apiKeyField, y: 182, height: 24)
+        cleanupCheckbox.frame = NSRect(x: controlX, y: 154, width: controlWidth + 20, height: 20)
         cleanupCheckbox.font = .systemFont(ofSize: 12)
         content.addSubview(cleanupCheckbox)
+
+        section("マイク", y: 118)
+        row("録音に使うマイク", control: micPopup, y: 86, height: 25)
+        let micNote = NSTextField(labelWithString: "AirPodsなどをつないでいても、ここで選んだマイクで録音します")
+        micNote.font = .systemFont(ofSize: 11)
+        micNote.textColor = .tertiaryLabelColor
+        micNote.frame = NSRect(x: labelX, y: 64, width: contentWidth - labelX * 2, height: 16)
+        micNote.alignment = .right
+        micNote.lineBreakMode = .byTruncatingTail
+        content.addSubview(micNote)
 
         let saveButton = NSButton(title: "保存", target: self, action: #selector(saveClicked))
         saveButton.bezelStyle = .rounded

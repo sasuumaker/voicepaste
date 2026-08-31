@@ -1,4 +1,6 @@
+import AudioToolbox
 import AVFoundation
+import CoreAudio
 import Foundation
 import VoicePasteCore
 
@@ -25,8 +27,18 @@ final class AudioRecorder {
 
     enum RecorderError: LocalizedError {
         case noInput
-        var errorDescription: String? { "マイク入力を取得できません（マイク権限を確認してください）" }
+        case deviceNotSelectable(OSStatus)
+        var errorDescription: String? {
+            switch self {
+            case .noInput: return "マイク入力を取得できません（マイク権限を確認してください）"
+            case .deviceNotSelectable(let status): return "選んだマイクを録音に使えません（CoreAudio \(status)）。設定でマイクを変えてください"
+            }
+        }
     }
+
+    /// 直近の録音の音量ピーク（0〜1）。「マイクが音を拾えていたか」を診断ログで確かめるため。
+    /// 0.00 なら無音（選んだマイクが音を拾っていない／ミュート）
+    private(set) var lastPeak: Float = 0
 
     var recordedSeconds: Double {
         lock.lock()
@@ -34,9 +46,11 @@ final class AudioRecorder {
         return Double(samples.count) / 16000.0
     }
 
-    /// - Parameter onCaptureLive: 最初の音声バッファが届いた（＝実際に録音が生きた）タイミングで
-    ///   メインスレッドから1回だけ呼ばれる。開始音はここで鳴らすことで喋り出しの欠けを防ぐ
-    func start(onCaptureLive: @escaping () -> Void) throws {
+    /// - Parameters:
+    ///   - deviceID: 録音に使うマイク。nil なら macOS の既定入力に任せる
+    ///   - onCaptureLive: 最初の音声バッファが届いた（＝実際に録音が生きた）タイミングで
+    ///     メインスレッドから1回だけ呼ばれる。開始音はここで鳴らすことで喋り出しの欠けを防ぐ
+    func start(deviceID: AudioDeviceID?, onCaptureLive: @escaping () -> Void) throws {
         lock.lock()
         samples.removeAll()
         lock.unlock()
@@ -46,6 +60,16 @@ final class AudioRecorder {
 
         let engine = AVAudioEngine()
         let input = engine.inputNode
+        // マイクは入力ノードの音声ユニットに直接指定する（AVAudioEngine はそのままだと macOS の既定入力を使う）。
+        // 形式（サンプルレート等）は機器ごとに違うので、指定してから読む
+        if let deviceID, let unit = input.audioUnit {
+            var id = deviceID
+            let status = AudioUnitSetProperty(
+                unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+                &id, UInt32(MemoryLayout<AudioDeviceID>.size)
+            )
+            guard status == noErr else { throw RecorderError.deviceNotSelectable(status) }
+        }
         let inputFormat = input.outputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
             throw RecorderError.noInput
@@ -105,6 +129,7 @@ final class AudioRecorder {
         let captured = samples
         samples.removeAll()
         lock.unlock()
+        lastPeak = captured.reduce(0) { max($0, abs($1)) }
         return WAV.encode(samples: captured)
     }
 

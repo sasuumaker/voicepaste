@@ -318,6 +318,26 @@ expect(GroqClient.stripThinking("現在のタスク管理をお願いします�
 expect(GroqClient.stripThinking("<think>a</think>本文<think>b</think>") == "本文", "複数あっても全部取り除く")
 expect(GroqClient.stripThinking("<think>途中で切れた") == "<think>途中で切れた", "閉じタグが無ければ触らない")
 
+print("InputDeviceSelection（録音に使うマイクの決め方）")
+let builtInMic = InputDeviceInfo(uid: "BuiltInMicrophoneDevice", name: "MacBook Airのマイク", isBuiltIn: true, isSystemDefault: false)
+let airPods = InputDeviceInfo(uid: "AIRPODS-UID", name: "AirPods Pro", isBuiltIn: false, isSystemDefault: true)
+let withAirPods = [builtInMic, airPods]
+expect(InputDeviceSelection.resolve(setting: "builtin", devices: withAirPods).device == builtInMic,
+       "既定(builtin): AirPodsがmacOSの既定入力でも内蔵マイクを使う")
+expect(InputDeviceSelection.resolve(setting: "builtin", devices: withAirPods).note == nil, "設定どおり選べたときは理由なし")
+expect(InputDeviceSelection.resolve(setting: "", devices: withAirPods).device == builtInMic, "空の設定は既定(内蔵)と同じ")
+expect(InputDeviceSelection.resolve(setting: "system", devices: withAirPods).device == airPods, "system: macOSの既定入力(AirPods)に従う")
+expect(InputDeviceSelection.resolve(setting: "AIRPODS-UID", devices: withAirPods).device == airPods, "UID指定: つながっていればその機器")
+let withoutAirPods = [InputDeviceInfo(uid: "BuiltInMicrophoneDevice", name: "MacBook Airのマイク", isBuiltIn: true, isSystemDefault: true)]
+let missing = InputDeviceSelection.resolve(setting: "AIRPODS-UID", devices: withoutAirPods)
+expect(missing.device?.isBuiltIn == true, "UID指定の機器が未接続なら内蔵マイクに戻す")
+expect(missing.note?.contains("見つからない") == true, "戻したときは理由を添える")
+let noBuiltIn = [InputDeviceInfo(uid: "USB-1", name: "USBマイク", isBuiltIn: false, isSystemDefault: true)]
+let fallback = InputDeviceSelection.resolve(setting: "builtin", devices: noBuiltIn)
+expect(fallback.device?.uid == "USB-1", "内蔵マイクが無い機種ではmacOSの既定入力を使う")
+expect(fallback.note?.contains("内蔵マイクが見つからない") == true, "内蔵が無いときも理由を添える")
+expect(InputDeviceSelection.resolve(setting: "builtin", devices: []).device == nil, "機器が1つも無ければ指定なし（エンジン任せ）")
+
 print("Config")
 let defaultConfig = Config.default
 expect(defaultConfig.model == "whisper-large-v3-turbo", "default model")
@@ -331,6 +351,7 @@ expect(defaultConfig.live_caption_enabled == true, "live caption on by default")
 expect(defaultConfig.live_caption_locale == "ja-JP", "default caption locale")
 // 既定はクリップボードを使わない。使うとクリップボード履歴アプリに音声入力の結果が積まれてしまう
 expect(defaultConfig.paste_via_clipboard == false, "貼り付けは既定でクリップボードを使わない")
+expect(defaultConfig.input_device == "builtin", "録音に使うマイクは既定でMacの内蔵")
 expect(defaultConfig.duplicatedHotkey == nil, "default hotkeys do not collide")
 
 // 同じキーを2つの機能に割り当てたら設定画面で弾く
@@ -375,6 +396,7 @@ if let legacy = try? JSONDecoder().decode(Config.self, from: Data(legacyJSON.utf
     expect(legacy.live_caption_enabled == true, "legacy config gets live caption default")
     expect(legacy.live_caption_locale == "ja-JP", "legacy config gets caption locale default")
     expect(legacy.paste_via_clipboard == false, "既存のconfigも読み直すとクリップボードを使わなくなる")
+    expect(legacy.input_device == "builtin", "古いconfigにもマイク設定の既定（内蔵）が入る")
 } else {
     expect(false, "legacy config decodes")
 }
