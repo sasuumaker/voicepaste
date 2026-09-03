@@ -14,6 +14,7 @@ Built as a self-hosted replacement for paid dictation apps. Recognition runs on
 |---|---|
 | **Dictate** | Hotkey to start, hotkey again to stop. The result is pasted at the cursor. |
 | **Cancel** | Press <kbd>Esc</kbd> while recording or transcribing. The audio and the result are thrown away and nothing is pasted. |
+| **Nothing said, nothing pasted** | Stop without saying anything and nothing is inserted. Silence and room noise are detected before the audio is sent, and Whisper's well-known made-up closings ("Thanks for watching") are dropped if they slip through. |
 | **Live caption** | A panel at the bottom of the screen shows an input-level meter and what you are saying, as you say it. It keeps growing instead of scrolling away, so you can read back the whole utterance. |
 | **Edit by voice** | Select text, press the edit hotkey, and say an instruction ("make this a list", "translate to English"). The selection is replaced with the result. |
 | **Paste again** | If you dictated while nothing was focused, focus the right field and press the re-paste hotkey. |
@@ -168,6 +169,7 @@ macOSのメニューバーに常駐する音声入力アプリです。ショー
 |---|---|
 | **音声入力** | ショートカットで開始、もう一度押して停止。カーソル位置に貼り付きます |
 | **途中でやめる** | 録音中・認識中に <kbd>Esc</kbd> を押すと、録った音も認識結果も捨てて、何も貼りません |
+| **何も言わなければ何も貼らない** | 何も言わずに止めると、何も入力されません。無音や部屋のノイズは送る前に見分け、すり抜けた「ご視聴ありがとうございました」のような決まり文句も捨てます |
 | **リアルタイム字幕** | 画面下のパネルに音量メーターと、喋っている内容がその場で出ます。流れて消えるのではなく溜まって伸びるので、話した全体を読み返せます |
 | **音声で書き換え** | 文章を選んで編集用のキーを押し、「これをリストにして」のように指示すると、選んだ部分が結果に置き換わります |
 | **もう一度貼る** | どこにもフォーカスしていない状態で喋ってしまったとき、入れたい場所を選んでから押し直せます |

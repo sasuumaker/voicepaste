@@ -103,9 +103,13 @@ enum TranscriptDebugLog {
     ///   - note: 整形を通していないときの理由（「整形オフ」「★整形に失敗: …」など）。candidate があるときは使わない。
     ///     以前は理由を書かず「整形オフ、または失敗」の一文だったため、整形モデルの廃止（HTTP 404）に9日間気づけなかった（2026-08-29）
     ///   - mic: 録音に使ったマイクの名前。聞き取りが外れたとき、AirPodsのマイクで録っていなかったかを確かめるため
-    static func write(raw: String, candidate: String?, accepted: Bool?, note: String? = nil, mic: String? = nil) {
+    ///   - speech: 「声が入っていたか」の測定値（`SpeechPresence.Measurement.summary`）。
+    ///     本物の発話がどの程度の数値になるかを溜めておき、無音判定の閾値を見直すときの材料にする
+    static func write(raw: String, candidate: String?, accepted: Bool?, note: String? = nil, mic: String? = nil,
+                      speech: String? = nil) {
         var lines = ["  生(\(raw.count)字): \(DebugLog.oneLine(raw, max: 300))"]
         if let mic { lines.append("  マイク: \(mic)") }
+        if let speech { lines.append("  測定: \(speech)") }
         if let candidate {
             lines.append("  整形後(\(candidate.count)字): \(DebugLog.oneLine(candidate, max: 300))")
         } else {
@@ -116,6 +120,28 @@ enum TranscriptDebugLog {
         case false?: lines.append("  判定: ★破棄（中身が書き換わっていたので生テキストを貼った）")
         case nil: lines.append("  判定: 検算なし（生テキストをそのまま貼った）")
         }
+        let entry = (["[\(DebugLog.timestamp())] 音声入力"] + lines).joined(separator: "\n") + "\n"
+        DebugLog.prepend(entry, to: "transcript-debug.log", limit: 30_000)
+    }
+
+    /// 何も言わずに止めた録音を Groq へ送らずに終えた。
+    /// `grep 貼らない transcript-debug.log` で、無音判定がどれだけ効いているか／本物の発話を誤って捨てていないかを数えられる
+    static func writeSilent(speech: String, mic: String?) {
+        var lines = ["  生: なし（★声が無いと判定し、Groqへ送らなかった）"]
+        if let mic { lines.append("  マイク: \(mic)") }
+        lines.append("  測定: \(speech)")
+        lines.append("  判定: 貼らない（無音）")
+        let entry = (["[\(DebugLog.timestamp())] 音声入力"] + lines).joined(separator: "\n") + "\n"
+        DebugLog.prepend(entry, to: "transcript-debug.log", limit: 30_000)
+    }
+
+    /// 認識結果が既知の幻覚句（`KnownHallucinations`）そのものだったので貼らなかった
+    static func writeHallucination(raw: String, mic: String?, speech: String?) {
+        var lines = ["  生(\(raw.count)字): \(DebugLog.oneLine(raw, max: 300))"]
+        if let mic { lines.append("  マイク: \(mic)") }
+        if let speech { lines.append("  測定: \(speech)") }
+        lines.append("  整形後: なし（★既知の幻覚句と全文一致）")
+        lines.append("  判定: 貼らない（幻覚句）")
         let entry = (["[\(DebugLog.timestamp())] 音声入力"] + lines).joined(separator: "\n") + "\n"
         DebugLog.prepend(entry, to: "transcript-debug.log", limit: 30_000)
     }
