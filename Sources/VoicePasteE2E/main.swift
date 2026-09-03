@@ -46,6 +46,52 @@ func synthesizeSpeech(_ text: String, voice: String = "Kyoko") throws -> Data {
     return try Data(contentsOf: URL(fileURLWithPath: wav))
 }
 
+/// WAV（16bit PCM モノラル）を Float サンプル列に戻す。afconvert の出力を SpeechPresence にかけるため
+func decodeWAV(_ data: Data) -> [Float] {
+    var offset = 12  // "RIFF" + size + "WAVE"
+    while offset + 8 <= data.count {
+        let id = String(decoding: data[offset..<(offset + 4)], as: UTF8.self)
+        let size = Int(data[(offset + 4)..<(offset + 8)].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) })
+        if id == "data" {
+            let body = data[(offset + 8)..<min(data.count, offset + 8 + size)]
+            return stride(from: body.startIndex, to: body.endIndex - 1, by: 2).map { index in
+                let value = body[index..<(index + 2)].withUnsafeBytes { $0.loadUnaligned(as: Int16.self) }
+                return Float(Int16(littleEndian: value)) / 32767
+            }
+        }
+        offset += 8 + size + (size % 2)
+    }
+    return []
+}
+
+/// 結果が毎回同じになる乱数（線形合同法 + Box-Muller）。部屋のノイズの再現用
+struct TestNoise {
+    var state: UInt64
+    mutating func next() -> Double {
+        state = state &* 6364136223846793005 &+ 1442695040888963407
+        return Double(state >> 11) / Double(1 << 53)
+    }
+    mutating func gaussian(_ sigma: Float) -> Float {
+        let u1 = max(next(), 1e-12)
+        let u2 = next()
+        return Float((-2 * log(u1)).squareRoot() * cos(2 * .pi * u2)) * sigma
+    }
+}
+
+func gaussianNoise(seconds: Double, sigma: Float, seed: UInt64 = 12345) -> [Float] {
+    var generator = TestNoise(state: seed)
+    return (0..<Int(seconds * 16000)).map { _ in generator.gaussian(sigma) }
+}
+
+/// 合成音声を指定のピーク音量まで下げ、前後に無音を足し、部屋のノイズを重ねる（小声の発話の再現）
+func synthesizeSamples(_ text: String, peak: Float, noiseSigma: Float, pad: Double = 0.4) throws -> [Float] {
+    let speech = decodeWAV(try synthesizeSpeech(text))
+    let maxAbs = speech.map(abs).max() ?? 1
+    var generator = TestNoise(state: 7)
+    let padding = [Float](repeating: 0, count: Int(pad * 16000))
+    return (padding + speech + padding).map { $0 / maxAbs * peak + generator.gaussian(noiseSigma) }
+}
+
 // MARK: - セットアップ
 
 guard let apiKey = Config.load().resolvedAPIKey else {
@@ -105,19 +151,44 @@ Task {
                    detail: "出力: \(result.prefix(120))")
         }
 
-        // ---- 4. 無音音声の全経路（録音誤爆シミュレーション）----
-        print("4. 無音音声の全経路")
-        let silence = WAV.encode(samples: [Float](repeating: 0, count: 16000))  // 1秒の無音
-        let silentTranscript = try await whisper.transcribe(wav: silence)
+        // ---- 4. 何も言わなかったとき（無音・部屋のノイズ・小声）の全経路 ----
+        // 実際に起きた事故: 何も言わずに止めると「ご視聴ありがとうございました。」が貼られた（2026-09-03）
+        print("4. 何も言わなかったときの全経路")
+        // 4-1. 声なし判定（Groqへ送らずに終わる経路）
+        let silence = [Float](repeating: 0, count: 16000)  // 1秒の無音
+        expect(!SpeechPresence.measure(samples: silence).hasSpeech, "無音1秒 → 声なし（Groqへ送らない）")
+        let roomNoise = gaussianNoise(seconds: 1.5, sigma: 0.01)  // 内蔵マイクでピーク0.04程度の部屋のノイズ
+        let roomMeasure = SpeechPresence.measure(samples: roomNoise)
+        expect(!roomMeasure.hasSpeech, "部屋のノイズ1.5秒（RMS 0.01）→ 声なし（Groqへ送らない）", detail: roomMeasure.summary)
+
+        // 4-2. すり抜けて送ってしまった場合の歯止め: Whisper が作る文は既知の幻覚句として捨てられること
+        let silentTranscript = try await whisper.transcribe(wav: WAV.encode(samples: silence))
         print("   無音の認識結果: \"\(silentTranscript)\"")
-        if silentTranscript.isEmpty {
-            expect(true, "無音→空文字（アプリ側は何も貼り付けない経路）")
-        } else {
-            // 幻聴が出た場合: 編集に流れても本文が保持されること
+        expect(silentTranscript.isEmpty || KnownHallucinations.isKnownPhrase(silentTranscript),
+               "無音 → 空文字か既知の幻覚句（どちらも貼らない）", detail: silentTranscript)
+        // 部屋のノイズは Whisper が「はい。」のような短い相槌を作ることがあり、これは幻覚句の一覧に載せていない
+        // （本物と区別できない）。声なし判定で送らないことが歯止めなので、判断は2段を合わせて見る
+        let noisyTranscript = try await whisper.transcribe(wav: WAV.encode(samples: roomNoise))
+        print("   部屋のノイズをもし送ったら: \"\(noisyTranscript)\"（実際には声なし判定で送らない）")
+        let wouldPasteNoise = roomMeasure.hasSpeech && !noisyTranscript.isEmpty
+            && !KnownHallucinations.isKnownPhrase(noisyTranscript)
+        expect(!wouldPasteNoise, "部屋のノイズ → 貼られない（声なし判定か幻覚句のどちらかで止まる）", detail: noisyTranscript)
+
+        // 4-3. 小声の短い発話は捨てない: 合成音声「はい」をピーク0.06まで下げ、部屋のノイズ（RMS 0.01）を重ねる
+        let quietYes = try synthesizeSamples("はい", peak: 0.06, noiseSigma: 0.01)
+        let quietMeasure = SpeechPresence.measure(samples: quietYes)
+        expect(quietMeasure.hasSpeech, "小声の「はい」（ピーク0.06・床0.01）→ 声あり（送る）", detail: quietMeasure.summary)
+        let quietTranscript = try await whisper.transcribe(wav: WAV.encode(samples: quietYes))
+        print("   小声の「はい」の認識結果: \"\(quietTranscript)\"")
+        expect(!quietTranscript.isEmpty && !KnownHallucinations.isKnownPhrase(quietTranscript),
+               "小声の「はい」は聞き取られ、幻覚句とも一致しない（貼られる）", detail: quietTranscript)
+
+        // 4-4. 幻覚句が編集モードに流れ込んでも本文が保持される（従来の検証）
+        if !silentTranscript.isEmpty {
             let result = try await editor.edit(selection: memo, instruction: silentTranscript)
             let preserved = result == memo
                 || (result.contains("料金プラン") && result.contains("8月末") && result.contains("TikTok"))
-            expect(preserved, "無音の幻聴「\(silentTranscript)」でも本文が保持される",
+            expect(preserved, "無音の幻聴「\(silentTranscript)」が編集に流れても本文が保持される",
                    detail: "出力: \(result.prefix(120))")
         }
 

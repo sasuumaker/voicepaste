@@ -483,6 +483,87 @@ do {
     }
 }
 
+print("SpeechPresence（声が入っていたかの判定・合成波形で再現）")
+// 乱数は結果が毎回同じになるよう自前で持つ（線形合同法 + Box-Muller）
+struct TestNoise {
+    var state: UInt64
+    mutating func next() -> Double {
+        state = state &* 6364136223846793005 &+ 1442695040888963407
+        return Double(state >> 11) / Double(1 << 53)
+    }
+    mutating func gaussian(_ sigma: Float) -> Float {
+        let u1 = max(next(), 1e-12)
+        let u2 = next()
+        return Float((-2 * log(u1)).squareRoot() * cos(2 * .pi * u2)) * sigma
+    }
+}
+func noise(seconds: Double, sigma: Float, seed: UInt64 = 12345) -> [Float] {
+    var generator = TestNoise(state: seed)
+    return (0..<Int(seconds * 16000)).map { _ in generator.gaussian(sigma) }
+}
+func tone(seconds: Double, amplitude: Float, hz: Double = 220) -> [Float] {
+    (0..<Int(seconds * 16000)).map { amplitude * Float(sin(2 * .pi * hz * Double($0) / 16000)) }
+}
+func mix(_ base: [Float], _ insert: [Float], at second: Double) -> [Float] {
+    var out = base
+    let start = Int(second * 16000)
+    for (index, value) in insert.enumerated() where start + index < out.count {
+        out[start + index] += value
+    }
+    return out
+}
+
+expect(!SpeechPresence.measure(samples: []).hasSpeech, "空 → 声なし")
+expect(!SpeechPresence.measure(samples: [Float](repeating: 0, count: 24000)).hasSpeech, "完全な無音1.5秒 → 声なし")
+expect(!SpeechPresence.measure(samples: noise(seconds: 1.0, sigma: 0.0005)).hasSpeech,
+       "デジタル無音に近いゆらぎ（RMS 0.0005）→ 声なし（閾値の下限 0.002 が効く）")
+
+// 実測に寄せた条件: 幻覚が出た録音は内蔵マイクでピーク 0.04 ＝ 部屋のノイズ RMS 0.01 程度
+let room = noise(seconds: 1.5, sigma: 0.01)
+let roomMeasure = SpeechPresence.measure(samples: room)
+expect(!roomMeasure.hasSpeech, "部屋のノイズ1.5秒（RMS 0.01）だけ → 声なし")
+expect(roomMeasure.noiseFloor > 0.008 && roomMeasure.noiseFloor < 0.012, "床はノイズの大きさになる（\(roomMeasure.noiseFloor)）")
+expect(roomMeasure.longestRunSeconds == 0, "定常ノイズは床の1.5倍を超えるコマが無い")
+
+// ホットキーを押す音: 30ms で減衰する衝撃を、録音の直後と停止の直前に1つずつ
+var clicks = room
+for start in [0.1, 1.3] {
+    let click = (0..<480).map { i in Float(0.05 * exp(-Double(i) / 80)) * (i % 2 == 0 ? 1 : -1) }
+    clicks = mix(clicks, click, at: start)
+}
+let clickMeasure = SpeechPresence.measure(samples: clicks)
+expect(!clickMeasure.hasSpeech, "キーを押す音（30ms×2）→ 声なし")
+expect(clickMeasure.longestRunSeconds <= 0.04, "キーの音は2コマ以内で消える（\(clickMeasure.longestRunSeconds)秒）")
+
+expect(SpeechPresence.measure(samples: mix(room, tone(seconds: 0.12, amplitude: 0.03), at: 0.5)).hasSpeech,
+       "小声の短い発話（0.12秒・床の2倍）→ 声あり")
+expect(!SpeechPresence.measure(samples: mix(room, tone(seconds: 0.04, amplitude: 0.03), at: 0.5)).hasSpeech,
+       "40msしか続かない音 → 声なし")
+expect(SpeechPresence.measure(samples: mix(noise(seconds: 1.5, sigma: 0.003), tone(seconds: 0.3, amplitude: 0.012), at: 0.5)).hasSpeech,
+       "静かな部屋（RMS 0.003）での小声（振幅0.012）→ 声あり")
+expect(!SpeechPresence.measure(samples: mix(room, tone(seconds: 0.3, amplitude: 0.012), at: 0.5)).hasSpeech,
+       "床（0.01）に埋もれた音（振幅0.012）→ 声なし（Whisperも聞き取れない領域）")
+// 息がマイクにかかった音（0.4秒のノイズの盛り上がり）は声と区別できない。ここでは通して、幻覚句の照合に任せる
+var breath = room
+var breathNoise = TestNoise(state: 99)
+for index in Int(0.4 * 16000)..<Int(0.8 * 16000) { breath[index] += breathNoise.gaussian(0.035) }
+expect(SpeechPresence.measure(samples: breath).hasSpeech, "息（0.4秒続く）は声として通す（区別できないので Whisper 側に任せる）")
+// 録音全体が声で埋まっていて静かな部分が無い（床そのものが高い）→ 無音ではないので送る
+expect(SpeechPresence.measure(samples: tone(seconds: 0.3, amplitude: 0.05)).hasSpeech,
+       "静かな部分の無い短い録音（全体が音）→ 声あり")
+let summary = roomMeasure.summary
+expect(summary.contains("声のある区間") && summary.contains("床0.0"), "診断ログ用の1行に判定材料が入る: \(summary)")
+
+print("KnownHallucinations（無音から作られる決まり文句の照合）")
+expect(KnownHallucinations.isKnownPhrase("ご視聴ありがとうございました。"), "実測の幻覚句（句点付き）")
+expect(KnownHallucinations.isKnownPhrase(" ご視聴ありがとうございました "), "前後の空白があっても一致")
+expect(KnownHallucinations.isKnownPhrase("Thank you for watching!"), "英語の締めの挨拶（大文字・記号）")
+expect(!KnownHallucinations.isKnownPhrase("ご視聴ありがとうございました。今日は設定の話です。"), "本文の一部に含まれるだけなら捨てない")
+expect(!KnownHallucinations.isKnownPhrase("ありがとうございました。"), "普通の「ありがとうございました」は捨てない")
+expect(!KnownHallucinations.isKnownPhrase("はい。"), "短い相槌は捨てない（本物と区別できない）")
+expect(!KnownHallucinations.isKnownPhrase("Thank you."), "普通の Thank you は捨てない")
+expect(!KnownHallucinations.isKnownPhrase(""), "空は幻覚句ではない（無音として別に扱う）")
+
 print("")
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

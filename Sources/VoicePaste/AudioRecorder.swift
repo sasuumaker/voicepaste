@@ -40,6 +40,9 @@ final class AudioRecorder {
     /// 0.00 なら無音（選んだマイクが音を拾っていない／ミュート）
     private(set) var lastPeak: Float = 0
 
+    /// 直近の録音に「声」が入っていたかの測定結果。何も言わずに止めた録音を Groq へ送らないために使う
+    private(set) var lastSpeech: SpeechPresence.Measurement?
+
     var recordedSeconds: Double {
         lock.lock()
         defer { lock.unlock() }
@@ -130,6 +133,7 @@ final class AudioRecorder {
         samples.removeAll()
         lock.unlock()
         lastPeak = captured.reduce(0) { max($0, abs($1)) }
+        lastSpeech = SpeechPresence.measure(samples: captured)
         return WAV.encode(samples: captured)
     }
 

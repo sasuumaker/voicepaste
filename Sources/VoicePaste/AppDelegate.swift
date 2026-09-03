@@ -265,6 +265,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        let micName = currentMicName.map { String(format: "%@（音量ピーク %.2f）", $0, recorder.lastPeak) }
+        let speech = recorder.lastSpeech
+
+        // 何も言わずに止めた録音は Groq へ送らない。送ると無音やノイズから
+        // 「ご視聴ありがとうございました」等の文が作られ、そのまま貼られてしまう（実測 2026-09-03）
+        if let speech, !speech.hasSpeech {
+            TranscriptDebugLog.writeSilent(speech: speech.summary, mic: micName)
+            finishWithoutPasting()
+            return
+        }
+
         guard let apiKey = config.resolvedAPIKey else {
             let message = "APIキー未設定。設定画面から Groq APIキー を入れてください"
             lastError = message
@@ -285,18 +296,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let client = GroqClient(apiKey: apiKey, model: config.model)
         let cleanupConfig = config
         let mode = recordingMode
-        let micName = currentMicName.map { String(format: "%@（音量ピーク %.2f）", $0, recorder.lastPeak) }
+        let speechSummary = speech?.summary
         runID += 1
         let thisRun = runID
         transcribeTask = Task {
             do {
-                let raw = try await client.transcribe(wav: wav)
+                let transcript = try await client.transcribe(wav: wav)
+                // 無音判定をすり抜けた音（息がマイクにかかった等）から Whisper が作る決まり文句は、
+                // 全文一致のときだけ「何も言っていない」として扱う
+                let isHallucination = KnownHallucinations.isKnownPhrase(transcript)
+                let raw = isHallucination ? "" : transcript
                 let text: String
                 // 整形に失敗しても貼り付けは止めないが、失敗したことはメニューに出す
                 var cleanupFailure: String?
                 switch mode {
                 case .dictation:
-                    if cleanupConfig.cleanup_enabled, !raw.isEmpty {
+                    if isHallucination {
+                        TranscriptDebugLog.writeHallucination(raw: transcript, mic: micName, speech: speechSummary)
+                        text = ""
+                    } else if cleanupConfig.cleanup_enabled, !raw.isEmpty {
                         // 整形失敗時は生テキストにフォールバック（貼り付けを止めない）。
                         // ただし理由は必ずログに残す。残していなかったせいで、整形モデルの廃止に9日間気づけなかった（2026-08-29）
                         let cleaner = GroqClient(apiKey: apiKey, model: cleanupConfig.cleanup_model)
@@ -304,24 +322,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             let result = try await cleaner.cleanup(text: raw)
                             text = result.text
                             TranscriptDebugLog.write(
-                                raw: raw, candidate: result.candidate, accepted: result.accepted, mic: micName
+                                raw: raw, candidate: result.candidate, accepted: result.accepted, mic: micName,
+                                speech: speechSummary
                             )
                         } catch {
                             text = raw
                             cleanupFailure = error.localizedDescription
                             TranscriptDebugLog.write(raw: raw, candidate: nil, accepted: nil,
-                                                     note: "★整形に失敗: \(error.localizedDescription)", mic: micName)
+                                                     note: "★整形に失敗: \(error.localizedDescription)", mic: micName,
+                                                     speech: speechSummary)
                         }
                     } else {
                         text = raw
                         TranscriptDebugLog.write(raw: raw, candidate: nil, accepted: nil,
-                                                 note: cleanupConfig.cleanup_enabled ? "無音（整形にかけない）" : "整形オフ", mic: micName)
+                                                 note: cleanupConfig.cleanup_enabled ? "無音（整形にかけない）" : "整形オフ", mic: micName,
+                                                 speech: speechSummary)
                     }
                 case .edit(let selection):
                     // 指示が無音なら何もしない。編集APIが失敗したら throw → エラー表示
                     // （生の指示テキストを貼ると選択部分が壊れるため、フォールバック貼り付けはしない）
                     guard !raw.isEmpty else {
-                        EditDebugLog.write(selection: selection, instruction: "(無音)", result: nil)
+                        EditDebugLog.write(selection: selection,
+                                           instruction: isHallucination ? "(幻覚句: \(transcript))" : "(無音)", result: nil)
                         text = ""
                         break
                     }
@@ -361,30 +383,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func handleTranscription(_ text: String) {
+    /// 何も言っていなかった（声なし・認識結果が空・幻覚句）ので何も貼らずに待機へ戻る。
+    /// 取り消しと同じ扱いで、エラーではない。警告音もメニューの「⚠️」も出さず、短く知らせるだけ
+    private func finishWithoutPasting() {
         isTranscribing = false
         endCancelHotkey()
-        if text.isEmpty {
-            lastError = "無音でした（認識結果が空）"
-            showHUDError("無音でした")
-        } else {
-            history.insert(text, at: 0)
-            if history.count > 20 { history.removeLast() }
-            let source: String
-            if case .edit = recordingMode { source = "編集モード" } else { source = "音声入力" }
-            // 「貼り付けました」は実際に送った瞬間に出す（表示と実物がズレないように）
-            let pasted = Paster.paste(
-                text, source: source, viaClipboard: config.paste_via_clipboard
-            ) { [weak self] in
-                self?.showHUDResult(text)
-            }
-            if !pasted {
-                let message = "クリップボードにコピーしました。自動貼り付けにはアクセシビリティ権限が必要です"
-                lastError = message
-                showHUDResult(text, prefix: "コピーしました（\(hotkeySymbol(config.hotkey_paste_last)) で貼り付け）")
-            }
-            NSSound(named: "Glass")?.play()
+        NSSound(named: "Tink")?.play()
+        if config.hud_enabled { hud.showInfo("無音でした（何も貼りません）") } else { hud.hide() }
+        updateIcon()
+        rebuildMenu()
+    }
+
+    private func handleTranscription(_ text: String) {
+        guard !text.isEmpty else {
+            finishWithoutPasting()
+            return
         }
+        isTranscribing = false
+        endCancelHotkey()
+        history.insert(text, at: 0)
+        if history.count > 20 { history.removeLast() }
+        let source: String
+        if case .edit = recordingMode { source = "編集モード" } else { source = "音声入力" }
+        // 「貼り付けました」は実際に送った瞬間に出す（表示と実物がズレないように）
+        let pasted = Paster.paste(
+            text, source: source, viaClipboard: config.paste_via_clipboard
+        ) { [weak self] in
+            self?.showHUDResult(text)
+        }
+        if !pasted {
+            let message = "クリップボードにコピーしました。自動貼り付けにはアクセシビリティ権限が必要です"
+            lastError = message
+            showHUDResult(text, prefix: "コピーしました（\(hotkeySymbol(config.hotkey_paste_last)) で貼り付け）")
+        }
+        NSSound(named: "Glass")?.play()
         updateIcon()
         rebuildMenu()
     }

@@ -1,3 +1,6 @@
 .build/
 build/
 .DS_Store
+
+# 作業計画（ローカル専用）
+tmp/
