@@ -107,6 +107,63 @@ if let chatBodyData = chatRequest.httpBody, let chatBody = try? JSONSerializatio
     expect(false, "chat httpBody is valid JSON")
 }
 
+print("GroqClient 出力上限と思考の設定（出力トークン／分の 429 対策）")
+// 上限を付けないと Groq は既定の 2048 を要求とみなし、qwen の出力トークン／分の上限 1000 を超えるとして 429 で断る（2026-09-09〜）
+expect(GroqClient.outputTokenBudget(inputCharacters: 0) == 32, "空でも 32 トークンの余裕")
+expect(GroqClient.outputTokenBudget(inputCharacters: 149) == 210, "149字 → 149×1.2+32 = 210（実測の出力 61 トークンの3倍）")
+expect(GroqClient.outputTokenBudget(inputCharacters: 5000) == GroqClient.outputTokenCap, "長すぎる入力は 1000 で頭打ち（超えると要求の時点で断られる）")
+expect(GroqClient.outputTokenBudget(inputCharacters: 100, growth: 2.0) == 232, "伸び率を上げられる（編集用）")
+func chatJSON(_ request: URLRequest) -> [String: Any] {
+    request.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+}
+let qwenBody = chatJSON(GroqClient.makeChatRequest(text: String(repeating: "あ", count: 149), apiKey: "k", model: "qwen/qwen3.8-27b"))
+expect(qwenBody["max_completion_tokens"] as? Int == 210, "整形リクエストに入力長ぶんの出力上限が付く")
+expect(qwenBody["reasoning_effort"] as? String == "none", "qwen 系は思考を切る（<think> の混入と、思考で上限を食い切る事故の防止）")
+let ossBody = chatJSON(GroqClient.makeChatRequest(text: "hello", apiKey: "k", model: "openai/gpt-oss-20b"))
+expect(ossBody["reasoning_effort"] == nil, "gpt-oss 系には reasoning_effort を付けない（none を受け付けない）")
+expect(ossBody["max_completion_tokens"] as? Int == 38, "5字 → 5×1.2+32 = 38")
+let editBody = chatJSON(GroqClient.makeEditRequest(
+    selection: String(repeating: "あ", count: 100), instruction: String(repeating: "い", count: 10),
+    apiKey: "k", model: "qwen/qwen3.8-27b"
+))
+expect(editBody["max_completion_tokens"] as? Int == 252, "編集は（選択＋指示）×2.0+32 = 252（翻訳・追記で伸びる）")
+
+print("GroqClient 予備モデルへの切り替え（待たずに別モデルで1回）")
+expect(GroqClient.chatModelsToTry(primary: "qwen/qwen3.8-27b") == ["qwen/qwen3.8-27b", "qwen/qwen3.6-27b"], "既定: 3.8 → 予備 3.6")
+expect(GroqClient.chatModelsToTry(primary: "qwen/qwen3.6-27b") == ["qwen/qwen3.6-27b", "qwen/qwen3.8-27b"], "設定が 3.6 なら予備は 3.8（同じモデルを2回試さない）")
+expect(GroqClient.chatModelsToTry(primary: "openai/gpt-oss-120b") == ["openai/gpt-oss-120b", "qwen/qwen3.6-27b", "qwen/qwen3.8-27b"], "設定が別のモデルでも予備2つが続く")
+let outputLimitBody = #"{"error":{"message":"Request too large for model `qwen/qwen3.8-27b` in organization `org_x` service tier `on_demand` on output tokens per minute (OTPM): Limit 1000, Requested 2048."}}"#
+expect(GroqClient.isOutputLimit(statusCode: 429, body: outputLimitBody), "実測の 429 本文を出力上限として認識")
+expect(!GroqClient.isOutputLimit(statusCode: 429, body: "Rate limit reached for requests"), "回数のレート制限は出力上限ではない")
+expect(!GroqClient.isOutputLimit(statusCode: 500, body: outputLimitBody), "429 以外は出力上限ではない")
+expect(!GroqClient.shouldStopFallback(GroqClient.ClientError.apiError(statusCode: 429, body: outputLimitBody)), "出力上限（429）→ 予備へ切り替える")
+expect(!GroqClient.shouldStopFallback(GroqClient.ClientError.apiError(statusCode: 500, body: "")), "一時エラー（5xx）→ 予備へ切り替える")
+expect(!GroqClient.shouldStopFallback(GroqClient.ClientError.apiError(statusCode: 404, body: "model_not_found")), "モデル廃止（404）→ 予備へ切り替える")
+expect(GroqClient.shouldStopFallback(GroqClient.ClientError.apiError(statusCode: 401, body: "")), "キー不正（401）→ 切り替えても直らないので止める")
+expect(GroqClient.shouldStopFallback(GroqClient.ClientError.truncated(model: "qwen/qwen3.8-27b")), "途中で切れた → 予備も同じ上限で切れるので止める")
+expect(GroqClient.shouldStopFallback(CancellationError()), "Esc（取り消し）→ 切り替えない")
+expect(!GroqClient.shouldStopFallback(URLError(.notConnectedToInternet)), "通信断 → 予備を試す（すぐ失敗して抜ける）")
+expect(GroqClient.shortReason(GroqClient.ClientError.apiError(statusCode: 429, body: outputLimitBody)) == "HTTP 429（出力トークンの上限）", "診断ログ用の短い理由")
+
+print("GroqClient.parseChat（応答の取り出し）")
+func chatResponse(content: String?, finish: String) -> Data {
+    let message: [String: Any] = content.map { ["content": $0] } ?? [:]
+    let json: [String: Any] = ["choices": [["message": message, "finish_reason": finish]]]
+    return try! JSONSerialization.data(withJSONObject: json)
+}
+expect((try? GroqClient.parseChat(chatResponse(content: "整形しました。", finish: "stop"), model: "m")) == "整形しました。", "普通の応答は本文を返す")
+expect((try? GroqClient.parseChat(chatResponse(content: "<think>考え中</think>本文", finish: "stop"), model: "m")) == "本文", "<think> は取り除く")
+do {
+    _ = try GroqClient.parseChat(chatResponse(content: "途中まで", finish: "length"), model: "m")
+    expect(false, "finish_reason=length は失敗にする")
+} catch GroqClient.ClientError.truncated(let model) {
+    expect(model == "m", "途中で切れた応答は貼らない（末尾が消えるため）")
+} catch {
+    expect(false, "length は truncated として投げる（実際: \(error)）")
+}
+expect((try? GroqClient.parseChat(chatResponse(content: "", finish: "stop"), model: "m")) == nil, "本文が空なら失敗（予備で取り直す）")
+expect((try? GroqClient.parseChat(chatResponse(content: nil, finish: "stop"), model: "m")) == nil, "content 無しも失敗")
+
 print("UtteranceBoundary（実測ログの並びを再生）")
 // 2026-08-02 の caption-debug.log から採った実際の (時刻, 文字数) の並び。
 // 「確定（時刻あり）→ 時刻0で振り出し」が本物の切り替わりで、確定そのものは切り替わりではない
