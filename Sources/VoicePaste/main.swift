@@ -46,6 +46,26 @@ case "--hud-snapshot":
         try? HUDPanel().writeRecordingSnapshot(training: training, to: url)
         print(url.path)
     }
+    // メニューバーのアイコン（18pt・テンプレート）を、白・緑・赤で並べて書き出す
+    let iconURL = folder.appendingPathComponent("menu-icon.png")
+    let strip = NSImage(size: NSSize(width: 120, height: 30), flipped: false) { rect in
+        NSColor(white: 0.12, alpha: 1).setFill()
+        rect.fill()
+        for (index, color) in [NSColor.white, .systemGreen, .systemRed].enumerated() {
+            let tinted = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { box in
+                SpeakingHeadIcon.image.draw(in: box)
+                color.set()
+                box.fill(using: .sourceAtop)
+                return true
+            }
+            tinted.draw(in: NSRect(x: 12 + CGFloat(index) * 38, y: 6, width: 18, height: 18))
+        }
+        return true
+    }
+    if let tiff = strip.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+        try? png.write(to: iconURL)
+        print(iconURL.path)
+    }
     exit(0)
 
 default:
