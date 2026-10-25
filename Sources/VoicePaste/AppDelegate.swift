@@ -528,16 +528,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - UI
 
-    /// メニューバーのアイコンは喋っている横顔（`SpeakingHeadIcon`）。録音中は赤、学習用に残すがオンの間は緑にして、
-    /// 仕事の話の前に気づけるようにする。認識中だけは処理中と分かる「…」の記号にする
+    /// メニューバーのアイコンは喋っている横顔（`SpeakingHeadIcon`）。録音中は赤、学習用に残すがオンの間は緑で右上に丸を付けて、
+    /// 仕事の話の前に気づけるようにする。認識中だけは処理中と分かる「…」の記号にする。
+    /// 色は contentTintColor では付かない（今の macOS のメニューバーが無視する）ので、色付きで描いた画像を使う
     private func updateIcon() {
+        statusItem.button?.contentTintColor = nil
         if isTranscribing && !isRecording {
             statusItem.button?.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "VoicePaste")
-            statusItem.button?.contentTintColor = nil
             return
         }
-        statusItem.button?.image = SpeakingHeadIcon.image
-        statusItem.button?.contentTintColor = isRecording ? .systemRed : (config.keep_training_voice ? .systemGreen : nil)
+        let style: SpeakingHeadIcon.Style = isRecording ? .recording : (config.keep_training_voice ? .training : .idle)
+        statusItem.button?.image = SpeakingHeadIcon.image(style)
     }
 
     private var statusText: String {

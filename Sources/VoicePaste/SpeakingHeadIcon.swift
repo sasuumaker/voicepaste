@@ -3,25 +3,48 @@ import AppKit
 /// メニューバーのアイコン: 右向きの横顔で口を開け、口の前に声を表す弧が2本ある形（絵文字の 🗣 と同じ形）。
 ///
 /// 以前の `mic`（SF Symbols のマイク）は、macOS の入力切り替えの印と見分けがつかなかった（2026-10-25 本人）。
-/// SF Symbols に横顔で喋っている形が無いので、ここで描く。テンプレート画像なので、メニューバーの明暗に合わせて
-/// 色が変わり、`contentTintColor` で緑（学習用に残すがオン）・赤（録音中）にできる
+/// SF Symbols に横顔で喋っている形が無いので、ここで描く。
+///
+/// 色はボタンの `contentTintColor` では付けない。今の macOS のメニューバーはテンプレート画像に付けた色を無視し、
+/// 学習用に残すをオンにしても緑にならなかった（2026-10-25 本人の画面で確認）。緑・赤は最初からその色で描いた
+/// 画像（テンプレートでない）にする。色が出ない場合にも見分けられるよう、学習用に残すの間は右上に丸を付ける
 enum SpeakingHeadIcon {
-    static let image: NSImage = {
-        let size: CGFloat = 18
-        let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { box in
-            draw(in: box)
+    enum Style {
+        /// 待機中・学習用に残すがオフ。テンプレート画像なので、メニューバーの明暗に合わせて色が変わる
+        case idle
+        /// 待機中・学習用に残すがオン。緑で、右上に丸
+        case training
+        /// 録音中。赤
+        case recording
+    }
+
+    static func image(_ style: Style) -> NSImage {
+        switch style {
+        case .idle: return idleImage
+        case .training: return trainingImage
+        case .recording: return recordingImage
+        }
+    }
+
+    private static let idleImage = make(color: .black, badge: false, template: true)
+    private static let trainingImage = make(color: .systemGreen, badge: true, template: false)
+    private static let recordingImage = make(color: .systemRed, badge: false, template: false)
+
+    private static func make(color: NSColor, badge: Bool, template: Bool) -> NSImage {
+        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { box in
+            draw(in: box, color: color, badge: badge)
             return true
         }
-        image.isTemplate = true
+        image.isTemplate = template
         image.accessibilityDescription = "VoicePaste"
         return image
-    }()
+    }
 
     /// 18×18 の座標で描いた形を、渡された大きさに合わせて描く
-    static func draw(in box: NSRect) {
+    static func draw(in box: NSRect, color: NSColor, badge: Bool) {
         let s = box.width / 18
         func p(_ x: CGFloat, _ y: CGFloat) -> NSPoint { NSPoint(x: box.minX + x * s, y: box.minY + y * s) }
-        NSColor.black.set()
+        color.set()
 
         let head = NSBezierPath()
         head.move(to: p(2.6, 0.8))
@@ -48,6 +71,11 @@ enum SpeakingHeadIcon {
             arc.lineWidth = 1.35 * s
             arc.lineCapStyle = .round
             arc.stroke()
+        }
+
+        if badge {
+            // 右上の空いている所に丸（頭の上・弧の上で、形に重ならない）
+            NSBezierPath(ovalIn: NSRect(x: box.minX + 13.4 * s, y: box.minY + 13.4 * s, width: 4.2 * s, height: 4.2 * s)).fill()
         }
     }
 }
