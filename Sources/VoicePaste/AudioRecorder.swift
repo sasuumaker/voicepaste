@@ -14,7 +14,7 @@ import VoicePasteCore
 final class AudioRecorder {
     private var capture: InputCapture?
     private var samples: [Float] = []
-    /// 「学習用に残す」がオンの回だけ、マイクの元の音質（モノラル）を別に溜める
+    /// 音声入力の回は、マイクの元の音質（モノラル）も別に溜める（学習用に残すかは止めた時点で決まるため）
     private var fullRateSamples: [Float] = []
     private var fullSampleRate: Double = 0
     private var onCaptureLive: (() -> Void)?
@@ -53,7 +53,7 @@ final class AudioRecorder {
     /// 直近の録音に「声」が入っていたかの測定結果。何も言わずに止めた録音を Groq へ送らないために使う
     private(set) var lastSpeech: SpeechPresence.Measurement?
 
-    /// 直近の録音の、マイクの元の音質のサンプル（学習用に残す回だけ。それ以外は nil）
+    /// 直近の録音の、マイクの元の音質のサンプル（keepFullRate で始めた回だけ。それ以外は nil）
     private(set) var lastFullRate: (samples: [Float], sampleRate: Int)?
 
     var recordedSeconds: Double {
@@ -66,7 +66,7 @@ final class AudioRecorder {
     ///   - deviceID: 録音に使うマイク。nil なら macOS の既定入力
     ///   - onCaptureLive: 最初の音声バッファが届いた（＝実際に録音が生きた）タイミングで
     ///     メインスレッドから1回だけ呼ばれる。開始音はここで鳴らすことで喋り出しの欠けを防ぐ
-    ///   - keepFullRate: true なら、16kHz に落とす前のマイクの音も溜める（学習用に残す）
+    ///   - keepFullRate: true なら、16kHz に落とす前のマイクの音も溜める（学習用に残すため。メモリに置くだけ）
     func start(deviceID: AudioDeviceID?, keepFullRate: Bool = false, onCaptureLive: @escaping () -> Void) throws {
         // 前の録音が閉じられずに残っていたら先に閉じる（開いたままだとマイクを握り続ける）
         capture?.close()

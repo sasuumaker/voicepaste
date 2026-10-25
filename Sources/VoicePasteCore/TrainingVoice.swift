@@ -12,10 +12,10 @@ public enum TrainingVoice {
             .appendingPathComponent("Library/Application Support/VoicePaste/training-voice")
     }
 
-    /// 残すかどうか。オン・オフは録音を始めた時点の状態で決める（録音中に切り替えても、その回は変わらない）
-    public static func shouldKeep(enabledAtStart: Bool, isDictation: Bool, hasSpeech: Bool,
+    /// 残すかどうか。enabled は録音を止めた時点の設定（話しながらポップアップのボタンでオフにした回は残さない）
+    public static func shouldKeep(enabled: Bool, isDictation: Bool, hasSpeech: Bool,
                                   transcript: String, isHallucination: Bool) -> Bool {
-        enabledAtStart && isDictation && hasSpeech && !isHallucination
+        enabled && isDictation && hasSpeech && !isHallucination
             && !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 

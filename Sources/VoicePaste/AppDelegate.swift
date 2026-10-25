@@ -32,8 +32,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentMicName: String?
     /// 設定どおりのマイクを使えなかった理由（設定したマイクが未接続など）。使えていれば nil
     private var micNote: String?
-    /// この回の録音を学習用に残すか。録音を始めた時点の設定で決める（録音中に切り替えても変わらない）
-    private var keepTrainingAtStart = false
     /// 学習用に残した声のたまった量。起動時に数え、残すたびに足す
     private var trainingTotals = TrainingVoice.Totals(count: 0, seconds: 0)
     private lazy var settingsController = SettingsWindowController(config: config)
@@ -45,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showHUDError(note)
         }
         trainingTotals = TrainingVoice.totals()
+        hud.onToggleTraining = { [weak self] in self?.toggleTrainingVoice() }
         updateIcon()
         rebuildMenu()
         requestPermissions()
@@ -204,15 +203,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let deviceID = devices.first { $0.info.uid == mic.device?.uid }?.id
         currentMicName = mic.device?.name
         micNote = mic.note
-        // 編集モードの指示は学習に使わない
-        keepTrainingAtStart = config.keep_training_voice && !isEdit
 
         if config.hud_enabled {
             hud.showRecording(
                 isEdit: isEdit,
                 hint: hotkeySymbol(isEdit ? config.hotkey_edit : config.hotkey_toggle),
-                // オンのまま仕事の話をしないよう、録音中のポップアップに出す
-                mic: keepTrainingAtStart ? "\(currentMicName ?? "マイク")・学習用に残す" : currentMicName
+                mic: currentMicName,
+                // 話しながら「これは残せない」と気づいたら、ポップアップのボタンで切り替えられる。編集モードは残さないので出さない
+                training: isEdit ? nil : config.keep_training_voice
             )
             recorder.onLevel = { [weak self] level in self?.hud.updateLevel(level) }
         } else {
@@ -226,7 +224,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             // 開始音はマイクが実際に生きてから鳴らす（ポンが鳴ったら喋ってOKの合図）
             try withAudioTimeout("録音の開始") {
-                try recorder.start(deviceID: deviceID, keepFullRate: keepTrainingAtStart, onCaptureLive: {
+                // 録音中にボタンでオンにされても残せるよう、音声入力のときは毎回元の音質も溜める（メモリだけ。残さない回は捨てる）
+                try recorder.start(deviceID: deviceID, keepFullRate: !isEdit, onCaptureLive: {
                     NSSound(named: "Pop")?.play()
                 })
             }
@@ -293,7 +292,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let micName = currentMicName.map { String(format: "%@（音量ピーク %.2f）", $0, recorder.lastPeak) }
         let speech = recorder.lastSpeech
         let fullRate = recorder.lastFullRate
-        let keepTraining = keepTrainingAtStart
+        // 残すかは録音を止めた時点の設定で決める（話しながらポップアップのボタンで切り替えた分が効く）
+        let keepTraining = config.keep_training_voice
         let plainMicName = currentMicName
 
         // 何も言わずに止めた録音は Groq へ送らない。送ると無音やノイズから
@@ -403,7 +403,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
                 if case .dictation = mode, let fullRate,
-                   TrainingVoice.shouldKeep(enabledAtStart: keepTraining, isDictation: true,
+                   TrainingVoice.shouldKeep(enabled: keepTraining, isDictation: true,
                                             hasSpeech: speech?.hasSpeech ?? true,
                                             transcript: raw, isHallucination: isHallucination) {
                     let seconds = Double(fullRate.samples.count) / Double(fullRate.sampleRate)
@@ -659,9 +659,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         requestSpeechPermissionIfNeeded()
     }
 
-    /// 学習用に残すのオン/オフ。次の録音から効く
+    /// 学習用に残すのオン/オフ。メニューと、録音中のポップアップのボタンから呼ばれる。
+    /// 録音中なら、その回から効く（止めた時点の設定で残すかを決めるため）
     @objc private func toggleTrainingVoice() {
         config.keep_training_voice.toggle()
+        hud.updateTraining(config.keep_training_voice)
         do {
             try Config.save(config)
             lastError = nil

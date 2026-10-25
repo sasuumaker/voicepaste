@@ -622,22 +622,22 @@ expect(!KnownHallucinations.isKnownPhrase("Thank you."), "普通の Thank you �
 expect(!KnownHallucinations.isKnownPhrase(""), "空は幻覚句ではない（無音として別に扱う）")
 
 print("TrainingVoice（学習用に残す: 残すかの判断・書き出し・たまった量）")
-expect(TrainingVoice.shouldKeep(enabledAtStart: true, isDictation: true, hasSpeech: true,
+expect(TrainingVoice.shouldKeep(enabled: true, isDictation: true, hasSpeech: true,
                                 transcript: "今日は晴れです。", isHallucination: false),
        "オン・音声入力・声あり・文字あり → 残す")
-expect(!TrainingVoice.shouldKeep(enabledAtStart: false, isDictation: true, hasSpeech: true,
+expect(!TrainingVoice.shouldKeep(enabled: false, isDictation: true, hasSpeech: true,
                                  transcript: "今日は晴れです。", isHallucination: false),
-       "オフ → 残さない（仕事の話）")
-expect(!TrainingVoice.shouldKeep(enabledAtStart: true, isDictation: false, hasSpeech: true,
+       "オフ（録音を止めた時点）→ 残さない。話しながらボタンでオフにした回も同じ")
+expect(!TrainingVoice.shouldKeep(enabled: true, isDictation: false, hasSpeech: true,
                                  transcript: "丁寧にして", isHallucination: false),
        "編集モードの指示 → 残さない")
-expect(!TrainingVoice.shouldKeep(enabledAtStart: true, isDictation: true, hasSpeech: false,
+expect(!TrainingVoice.shouldKeep(enabled: true, isDictation: true, hasSpeech: false,
                                  transcript: "今日は晴れです。", isHallucination: false),
        "声なし → 残さない")
-expect(!TrainingVoice.shouldKeep(enabledAtStart: true, isDictation: true, hasSpeech: true,
+expect(!TrainingVoice.shouldKeep(enabled: true, isDictation: true, hasSpeech: true,
                                  transcript: "ご視聴ありがとうございました。", isHallucination: true),
        "幻覚句 → 残さない")
-expect(!TrainingVoice.shouldKeep(enabledAtStart: true, isDictation: true, hasSpeech: true,
+expect(!TrainingVoice.shouldKeep(enabled: true, isDictation: true, hasSpeech: true,
                                  transcript: "  \n", isHallucination: false),
        "文字起こしが空白だけ → 残さない")
 

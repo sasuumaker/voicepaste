@@ -37,6 +37,17 @@ case "--selftest-record":
     let seconds = options.dropFirst().first.flatMap { TimeInterval($0) } ?? 0.5
     exit(RecorderSelfTest.run(cycles: cycles, seconds: seconds, saveLastTo: options.dropFirst(2).first))
 
+case "--hud-snapshot":
+    // 録音中のポップアップの見た目を、画面に出さずに PNG に書き出す（学習用に残すボタンのオン・オフ・なしの3枚）
+    _ = NSApplication.shared
+    let folder = URL(fileURLWithPath: CommandLine.arguments.dropFirst(2).first ?? ".")
+    for (name, training) in [("hud-training-on", true as Bool?), ("hud-training-off", false), ("hud-no-button", nil)] {
+        let url = folder.appendingPathComponent("\(name).png")
+        try? HUDPanel().writeRecordingSnapshot(training: training, to: url)
+        print(url.path)
+    }
+    exit(0)
+
 default:
     break
 }
