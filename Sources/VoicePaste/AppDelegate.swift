@@ -36,6 +36,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        if let note = AudioCallTimeout.takeRestartNote() {
+            lastError = note
+            showHUDError(note)
+        }
         updateIcon()
         rebuildMenu()
         requestPermissions()
@@ -126,7 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         transcribeTask?.cancel()
         transcribeTask = nil
         if isRecording {
-            _ = recorder.stop()  // WAVは受け取らずに捨てる
+            _ = withAudioTimeout("録音の停止") { recorder.stop() }  // WAVは受け取らずに捨てる
             stopLiveCaption()
             isRecording = false
         }
@@ -213,13 +217,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         do {
             // 開始音はマイクが実際に生きてから鳴らす（ポンが鳴ったら喋ってOKの合図）
-            try recorder.start(deviceID: deviceID, onCaptureLive: {
-                NSSound(named: "Pop")?.play()
-            })
+            try withAudioTimeout("録音の開始") {
+                try recorder.start(deviceID: deviceID, onCaptureLive: {
+                    NSSound(named: "Pop")?.play()
+                })
+            }
             isRecording = true
             lastError = nil
             beginCancelHotkey()
         } catch {
+            TranscriptDebugLog.writeAudioProblem("★開始できず: \(error.localizedDescription)", mic: currentMicName)
             lastError = error.localizedDescription
             NSSound(named: "Basso")?.play()
             stopLiveCaption()
@@ -228,6 +235,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         updateIcon()
         rebuildMenu()
+    }
+
+    /// マイクの開始・停止を、止まったらアプリを起動し直す歯止め付きで行う（`AudioCallTimeout`）
+    private func withAudioTimeout<T>(_ step: String, _ body: () throws -> T) rethrows -> T {
+        let timeout = AudioCallTimeout(step: step, mic: currentMicName)
+        defer { timeout.cancel() }
+        return try body()
     }
 
     /// 録音中の「いま喋っている内容」表示。あくまで見た目用で、確定テキストはGroqが作る
@@ -255,7 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func finishRecording() {
         let seconds = recorder.recordedSeconds
-        let wav = recorder.stop()
+        let wav = withAudioTimeout("録音の停止") { recorder.stop() }
         stopLiveCaption()
         isRecording = false
 

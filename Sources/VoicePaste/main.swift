@@ -30,6 +30,13 @@ case "--uninstall-autostart":
     print("✅ 自動起動の登録を解除しました（アプリ本体は消していません）")
     exit(0)
 
+case "--selftest-record":
+    // 録音の開始・停止をくり返す実機確認（RecorderSelfTest.swift に起動のしかた）
+    let options = Array(CommandLine.arguments.dropFirst(2))
+    let cycles = options.first.flatMap { Int($0) } ?? 20
+    let seconds = options.dropFirst().first.flatMap { TimeInterval($0) } ?? 0.5
+    exit(RecorderSelfTest.run(cycles: cycles, seconds: seconds, saveLastTo: options.dropFirst(2).first))
+
 default:
     break
 }

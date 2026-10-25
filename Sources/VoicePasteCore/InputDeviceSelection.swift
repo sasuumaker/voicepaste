@@ -29,7 +29,7 @@ public enum InputDeviceSelection {
     public static let followSystem = "system"
 
     public struct Resolution: Equatable {
-        /// 使うマイク。nil は「指定せず AVAudioEngine に任せる（＝macOSの既定）」
+        /// 使うマイク。nil は「macOSの既定の入力を使う」
         public let device: InputDeviceInfo?
         /// 設定どおりに選べなかったときの理由。設定どおりなら nil
         public let note: String?

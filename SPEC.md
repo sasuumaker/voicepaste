@@ -25,6 +25,7 @@ Aqua Voice相当のmacOS音声入力アプリ（個人利用・自作）。
 | 10 | 途中で取り消し | 録音中・認識中に `Esc` を押すと、録った音も認識結果も捨てて何も貼らずに待機へ戻る。Escを奪うのはその数秒だけ |
 | 11 | マイクの選択 | 録音に使うマイクを設定で選べる。既定は**Macの内蔵マイク**（AirPodsをつないでmacOSの既定入力がAirPodsになっても内蔵で録る。AirPodsのマイクは認識精度が大きく落ちるため・本人実感 2026-08-30）。`input_device` = `builtin` / `system`（macOSの設定に従う）/ 機器のUID。設定画面の「マイク」欄はつながっている機器を毎回取り直して一覧にする。設定した機器が未接続なら内蔵に戻し、理由をメニューに出す。録音中のポップアップ・メニュー・診断ログに使っているマイク名を出す |
 | 12 | 無音なら貼らない | 何も言わずに録音を止めたら、何も貼らずに待機へ戻る。録った音に声が無ければGroqへ送らず（`SpeechPresence`）、送ってしまった結果が無音から作られる決まり文句（「ご視聴ありがとうございました」等）そのものなら捨てる（`KnownHallucinations`）。エラー扱いにはせず、ポップアップに「無音でした」を短く出すだけ |
+| 13 | 固まったら起動し直す | マイクの開始・停止が8秒たっても戻らなければ、記録を残してアプリを終了し、自動起動（launchd）が起動し直す。起動後に理由をポップアップとメニューに出す（`AudioCallTimeout`）。後述「録音開始でアプリが固まった件」 |
 
 ## デフォルト設定（`~/.config/voicepaste/config.json`）
 
@@ -80,7 +81,9 @@ Sources/
 │   ├── main.swift           # エントリポイント（accessory app）
 │   ├── AppDelegate.swift    # 状態管理・メニュー・録音フロー
 │   ├── HotKeyManager.swift  # Carbon RegisterEventHotKey（権限不要）・全解除して再登録も可
-│   ├── AudioRecorder.swift  # AVAudioEngine → 16kHzモノラル変換・音量とバッファを外へ流す。マイクは音声ユニットに直接指定
+│   ├── AudioRecorder.swift  # 入力用の音声ユニット（AUHAL）を直接開く → 16kHzモノラル変換・音量とバッファを外へ流す。AVAudioEngine は使わない
+│   ├── AudioCallTimeout.swift # マイクの開始・停止が8秒戻らなければアプリを終了して起動し直させる歯止め
+│   ├── RecorderSelfTest.swift # `--selftest-record`: 録音の開始・停止をくり返す実機確認
 │   ├── AudioInputDevices.swift # CoreAudioで入力機器の一覧（名前・UID・内蔵か・macOSの既定か）を取る
 │   ├── HUDPanel.swift       # 画面下のポップアップ（状態・音量メーター・字幕）
 │   ├── LiveTranscriber.swift # 録音中の逐次表示（Speech framework・オンデバイス限定）
@@ -94,8 +97,11 @@ Sources/
 
 1. ホットキー → `AudioRecorder.start()`。開始音（Pop）は最初の音声バッファ到着後に鳴らす＝鳴った時点で確実に録音中（喋り出し欠け防止）
    - 録音のたびに `AudioInputDevices.list()` で機器一覧を取り直し、`InputDeviceSelection.resolve` で使うマイクを決める。
-     `AVAudioEngine` はそのままだとmacOSの既定入力を使うので、入力ノードの音声ユニットに
-     `kAudioOutputUnitProperty_CurrentDevice` で機器を指定してから形式を読む（機器ごとにサンプルレートが違う）
+     入力用の音声ユニット（AUHAL）を作り、入力を有効・出力を無効にしてから `kAudioOutputUnitProperty_CurrentDevice` で
+     機器を指定し、そのあとで形式を読む（機器ごとにサンプルレートが違う）。装置の指定はこの1回だけで、開始前・同じスレッドで行う。
+     AUHAL は入力側でサンプルレートを変えないので、機器のレートのまま受け取り `AVAudioConverter` で 16kHz モノラルにする
+   - 開始・停止は `AudioCallTimeout` の歯止め付き（8秒戻らなければ起動し直す）。開始できなかった回は `transcript-debug.log` に
+     `録音: ★開始できず: <理由>` を残す
    - 同時に Groq への接続を先に張っておく（`GroqClient.warmUp`）。止めたあとの認識が TLS の握手ぶん速くなる
      （実測 2026-09-10・`URLSession.shared`: 新規接続 0.46秒 → 再利用 0.27秒。接続は 65秒空けても再利用された）
 2. ホットキー再押下 → `stop()` → WAV化（0.3秒未満は誤爆として破棄）
@@ -196,6 +202,41 @@ Esc は元から「何も送らない」経路なので、問題が出るのは�
 - 閾値の材料: 毎回の診断ログに `測定: 声のある区間 最長N秒（合計N秒）／床N／最大N` を残す。
   本物の発話が誤って捨てられたら `grep 貼らない transcript-debug.log` で見つかり、数値から閾値を見直せる。
   閾値は `SpeechPresence` の定数（`ratioOverFloor` / `minimumRunFrames` / `loudFloorRMS`）
+
+### 録音開始でアプリが固まった件（2026-09-27）
+
+2026-09-27 21:21、録音開始のホットキーでアプリ全体が固まった（メニューもホットキーも効かない・CPU 37%・coreaudiod も 69%）。
+
+**原因（sample とシステムログで確認）**: 当時の録音部品は録音のたびに `AVAudioEngine` を作っていた。
+`AVAudioEngine` は作った直後に、裏の別スレッドで入力部品の装置を「既定の出力 → 既定の仮想まとめ装置（`CADefaultDeviceAggregate`）」へ
+自分で切り替える。同じタイミングでアプリが主スレッドで内蔵マイクへ切り替えるので、1つの部品を2つのスレッドが同時に切り替えていた
+（正常な回のログにも毎回出ていた）。
+
+1. 21:21:15: 内蔵マイクへの切り替えの途中で `listener was already added` → 切り替え失敗（エラー音）。付けた見張りが外れないまま残った
+2. 21:21:21: 次の開始で `AVAudioEngine` が仮想まとめ装置へ切り替える時に同じ衝突 → `Error setting device on iounit, err = 'nope'`
+   → 主スレッドが `engine.inputNode` の中（`_GetHWFormat`）の繰り返しから戻らなくなった
+
+`throwing -10877` は正常な回でも毎回出るので無関係。固まるまでにこのプロセスは4日間で82回以上録音していたので、決まった回数で壊れるわけではない。
+
+**再現**: 開始・停止を 0.3秒ずつ間を空けずにくり返す（`--selftest-record 100 0.3`）と、当時の部品は41回目・39回目で
+「CoreAudio 1852797029」で失敗し、その次で固まった（sample も同じ場所）。
+
+**直し方**:
+- 録音部品を `AVAudioEngine` から AUHAL の直接利用に変えた。装置の指定はこちらが1回・1スレッド・開始前に行うだけで、
+  裏での切り替えも仮想まとめ装置も無くなる。同じ試験で 100/100・300/300 回成功（開始は平均 0.053秒・最大 0.085秒）。
+  6秒の録音を Groq で文字起こしし、変換後の音声が正しく聞き取れることも確かめた
+- 歯止め `AudioCallTimeout`: CoreAudio の中で止まるとアプリは自分では戻れないので、開始・停止が8秒たっても終わらなければ
+  `transcript-debug.log` に記録し、`restarted-after-stall.txt` に案内を書いて `_exit(1)` する（`exit()` は後片付けが
+  止まった所で待つ恐れがあるので使わない）。launchd の `KeepAlive.SuccessfulExit = false` が起動し直し、起動時に案内を
+  ポップアップとメニューに出してファイルを消す。当時の部品にこの歯止めを付けて固まらせ、プロセスが終わることを確かめた
+- 8秒の根拠: 普段の開始は 0.05秒前後。Bluetooth のマイクは切り替えに1〜2秒かかることがあるので余裕を取った
+
+**実機での確かめ方**: マイクの許可はアプリごとに付くので `open` 経由で起動する（ターミナルから直接実行すると音が0のまま届く）。
+
+```bash
+open -n -W --stdout out.txt --stderr out.txt build/VoicePaste.app --args --selftest-record 100 0.3
+# 回数・1回の秒数・（任意）最後の録音を保存する WAV のパス。各回の開始時間・最初の音まで・録れた長さ・音量ピークが出る
+```
 
 ### 途中で取り消す（Esc）
 
@@ -314,6 +355,9 @@ Clipy や Paste のようなクリップボード履歴アプリを使ってい�
 1.5秒待ってから生テキストを貼っていた）を「なんとなく遅い」としか捉えられなかった。
 予備モデルで整形した回は `（予備 <モデル>: <設定のモデルの失敗理由>）` になるので、`grep 予備 transcript-debug.log` で
 設定のモデルがどれだけ使えていないかを数えられる。
+録音を開始できなかった回は `録音: ★開始できず: <理由>`、開始・停止が止まって起動し直した回は
+`録音: ★録音の開始が8秒たっても終わらないので、アプリを終了して起動し直した` で残す（2026-09-27 追加。
+それまでは開始の失敗がどこにも残らず、固まった原因をシステムログから探すしかなかった）。
 各回に `マイク: <機器名>（音量ピーク 0.04）` と `測定: 声のある区間 最長N秒（合計N秒）／床N／最大N`（無音判定の材料）も残す。
 何も貼らなかった回は `判定: 貼らない（無音）`（Groqへ送っていない）／`判定: 貼らない（幻覚句）` で残るので、
 `grep 貼らない transcript-debug.log` で無音判定がどれだけ効いているか、本物の発話を誤って捨てていないかを数えられる。ピークが 0.00 なら選んだマイクが音を拾っていない（未接続・ミュート・仮想機器）。
@@ -473,6 +517,7 @@ launchd 経由で起動された自分自身を `bootout` すると、その場�
 ./setup-signing.sh         # 初回1回のみ: 固定署名証明書を作成
 ./build.sh                 # → build/VoicePaste.app（固定署名。証明書が無ければad-hoc）
 swift run VoicePasteTests  # ユニットテスト（XCTest非依存ランナー）
+open -n -W --stdout out.txt build/VoicePaste.app --args --selftest-record 100 0.3  # 録音の開始・停止をくり返す実機確認
 ./install-autostart.sh     # ログイン時の自動起動を登録（任意）
 ```
 

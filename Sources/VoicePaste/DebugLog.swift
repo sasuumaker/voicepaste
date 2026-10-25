@@ -159,6 +159,15 @@ enum TranscriptDebugLog {
         DebugLog.prepend(entry, to: "transcript-debug.log", limit: 30_000)
     }
 
+    /// マイクを開けなかった／開始・停止が止まった。
+    /// 以前は録音開始の失敗をどこにも残しておらず、2026-09-27 に固まったときはシステムログから探すしかなかった
+    static func writeAudioProblem(_ what: String, mic: String?) {
+        var lines = ["  録音: \(DebugLog.oneLine(what, max: 200))"]
+        if let mic { lines.append("  マイク: \(mic)") }
+        let entry = (["[\(DebugLog.timestamp())] 音声入力"] + lines).joined(separator: "\n") + "\n"
+        DebugLog.prepend(entry, to: "transcript-debug.log", limit: 30_000)
+    }
+
     /// 認識結果が既知の幻覚句（`KnownHallucinations`）そのものだったので貼らなかった
     static func writeHallucination(raw: String, mic: String?, speech: String?) {
         var lines = ["  生(\(raw.count)字): \(DebugLog.oneLine(raw, max: 300))"]

@@ -30,6 +30,12 @@ enum AudioInputDevices {
         }
     }
 
+    /// macOSの「サウンド」設定でいま入力に選ばれている機器。入力機器が1つも無ければ nil
+    static func systemDefaultID() -> AudioDeviceID? {
+        let id: AudioDeviceID = value(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultInputDevice) ?? 0
+        return id == 0 ? nil : id
+    }
+
     // MARK: - CoreAudio の読み出し
 
     private static func address(_ selector: AudioObjectPropertySelector,
