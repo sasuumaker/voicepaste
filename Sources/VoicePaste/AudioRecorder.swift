@@ -14,6 +14,9 @@ import VoicePasteCore
 final class AudioRecorder {
     private var capture: InputCapture?
     private var samples: [Float] = []
+    /// 「学習用に残す」がオンの回だけ、マイクの元の音質（モノラル）を別に溜める
+    private var fullRateSamples: [Float] = []
+    private var fullSampleRate: Double = 0
     private var onCaptureLive: (() -> Void)?
     private var captureLiveFired = false
     private var lastLevelSentAt: CFAbsoluteTime = 0
@@ -50,6 +53,9 @@ final class AudioRecorder {
     /// 直近の録音に「声」が入っていたかの測定結果。何も言わずに止めた録音を Groq へ送らないために使う
     private(set) var lastSpeech: SpeechPresence.Measurement?
 
+    /// 直近の録音の、マイクの元の音質のサンプル（学習用に残す回だけ。それ以外は nil）
+    private(set) var lastFullRate: (samples: [Float], sampleRate: Int)?
+
     var recordedSeconds: Double {
         lock.lock()
         defer { lock.unlock() }
@@ -60,13 +66,16 @@ final class AudioRecorder {
     ///   - deviceID: 録音に使うマイク。nil なら macOS の既定入力
     ///   - onCaptureLive: 最初の音声バッファが届いた（＝実際に録音が生きた）タイミングで
     ///     メインスレッドから1回だけ呼ばれる。開始音はここで鳴らすことで喋り出しの欠けを防ぐ
-    func start(deviceID: AudioDeviceID?, onCaptureLive: @escaping () -> Void) throws {
+    ///   - keepFullRate: true なら、16kHz に落とす前のマイクの音も溜める（学習用に残す）
+    func start(deviceID: AudioDeviceID?, keepFullRate: Bool = false, onCaptureLive: @escaping () -> Void) throws {
         // 前の録音が閉じられずに残っていたら先に閉じる（開いたままだとマイクを握り続ける）
         capture?.close()
         capture = nil
         lock.lock()
         samples.removeAll()
+        fullRateSamples.removeAll()
         lock.unlock()
+        lastFullRate = nil
         self.onCaptureLive = onCaptureLive
         self.captureLiveFired = false
         self.lastLevelSentAt = 0
@@ -74,9 +83,12 @@ final class AudioRecorder {
         guard let device = deviceID ?? AudioInputDevices.systemDefaultID() else {
             throw RecorderError.noInput
         }
-        let capture = try InputCapture.open(device: device, targetFormat: targetFormat) { [weak self] output in
+        let receiveFullRate: (([Float]) -> Void)? = keepFullRate ? { [weak self] mono in self?.receiveFullRate(mono) } : nil
+        let capture = try InputCapture.open(device: device, targetFormat: targetFormat,
+                                            deliverFullRate: receiveFullRate) { [weak self] output in
             self?.receive(output)
         }
+        fullSampleRate = capture.deviceSampleRate
         do {
             try capture.start()
         } catch {
@@ -96,7 +108,10 @@ final class AudioRecorder {
         lock.lock()
         let captured = samples
         samples.removeAll()
+        let fullRate = fullRateSamples
+        fullRateSamples.removeAll()
         lock.unlock()
+        lastFullRate = fullRate.isEmpty ? nil : (fullRate, Int(fullSampleRate.rounded()))
         lastPeak = captured.reduce(0) { max($0, abs($1)) }
         lastSpeech = SpeechPresence.measure(samples: captured)
         return WAV.encode(samples: captured)
@@ -118,6 +133,13 @@ final class AudioRecorder {
         // 変換済みバッファは毎回この場で作った自前のものなので、そのまま渡して安全
         onBuffer?(output)
         emitLevel(from: converted)
+    }
+
+    /// マイクの元の音質のモノラルを受け取る。オーディオスレッドから呼ばれる
+    private func receiveFullRate(_ mono: [Float]) {
+        lock.lock()
+        fullRateSamples.append(contentsOf: mono)
+        lock.unlock()
     }
 
     /// 音量（RMS）を 0〜1 に正規化して間引いて通知する。
@@ -149,20 +171,27 @@ private final class InputCapture {
     private let targetFormat: AVAudioFormat
     private let ratio: Double
     private let deliver: (AVAudioPCMBuffer) -> Void
+    /// 学習用に残す回だけ渡す。変換前の音をチャンネルの平均でモノラルにして渡す
+    private let deliverFullRate: (([Float]) -> Void)?
     private var closed = false
 
+    var deviceSampleRate: Double { deviceBuffer.format.sampleRate }
+
     private init(unit: AudioUnit, deviceBuffer: AVAudioPCMBuffer, converter: AVAudioConverter,
-                 targetFormat: AVAudioFormat, deliver: @escaping (AVAudioPCMBuffer) -> Void) {
+                 targetFormat: AVAudioFormat, deliverFullRate: (([Float]) -> Void)?,
+                 deliver: @escaping (AVAudioPCMBuffer) -> Void) {
         self.unit = unit
         self.deviceBuffer = deviceBuffer
         self.converter = converter
         self.targetFormat = targetFormat
         self.ratio = targetFormat.sampleRate / deviceBuffer.format.sampleRate
+        self.deliverFullRate = deliverFullRate
         self.deliver = deliver
     }
 
     /// 音声ユニットを作り、マイクを指定して、開始できる状態まで準備する（まだ音は流れない）
     static func open(device: AudioDeviceID, targetFormat: AVAudioFormat,
+                     deliverFullRate: (([Float]) -> Void)? = nil,
                      deliver: @escaping (AVAudioPCMBuffer) -> Void) throws -> InputCapture {
         var description = AudioComponentDescription(
             componentType: kAudioUnitType_Output,
@@ -220,7 +249,7 @@ private final class InputCapture {
             else { throw AudioRecorder.RecorderError.noInput }
 
             let capture = InputCapture(unit: unit, deviceBuffer: deviceBuffer, converter: converter,
-                                       targetFormat: targetFormat, deliver: deliver)
+                                       targetFormat: targetFormat, deliverFullRate: deliverFullRate, deliver: deliver)
             // コールバックに渡すのは参照を増やさない生のポインタ。capture の寿命は AudioRecorder が持ち、
             // close() で音声ユニットを破棄してから手放すので、破棄前に解放されることはない
             var callback = AURenderCallbackStruct(inputProc: inputCaptureCallback,
@@ -261,6 +290,21 @@ private final class InputCapture {
         }
         let status = AudioUnitRender(unit, flags, timeStamp, bus, frames, deviceBuffer.mutableAudioBufferList)
         guard status == noErr else { return status }
+
+        if let deliverFullRate, let channels = deviceBuffer.floatChannelData {
+            let count = Int(frames)
+            let channelCount = Int(deviceBuffer.format.channelCount)
+            var mono = [Float](repeating: 0, count: count)
+            for channel in 0..<channelCount {
+                let data = channels[channel]
+                for index in 0..<count { mono[index] += data[index] }
+            }
+            if channelCount > 1 {
+                let scale = 1 / Float(channelCount)
+                for index in 0..<count { mono[index] *= scale }
+            }
+            deliverFullRate(mono)
+        }
 
         let capacity = AVAudioFrameCount(Double(frames) * ratio + 32)
         guard let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return noErr }
