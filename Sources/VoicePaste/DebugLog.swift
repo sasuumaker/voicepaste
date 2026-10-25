@@ -105,11 +105,15 @@ enum TranscriptDebugLog {
     ///   - mic: 録音に使ったマイクの名前。聞き取りが外れたとき、AirPodsのマイクで録っていなかったかを確かめるため
     ///   - speech: 「声が入っていたか」の測定値（`SpeechPresence.Measurement.summary`）。
     ///     本物の発話がどの程度の数値になるかを溜めておき、無音判定の閾値を見直すときの材料にする
+    ///   - timing: 各工程の所要時間（`timingLine` で作る）。「遅い」と言われたときに、認識と整形のどちらが
+    ///     遅いのかをこのファイルだけで切り分けるため。これが無く、9/9〜9/10 の整形の失敗（出力上限の 429 で
+    ///     1.5秒待ってから生テキストを貼っていた）を「なんとなく遅い」としか捉えられなかった
     static func write(raw: String, candidate: String?, accepted: Bool?, note: String? = nil, mic: String? = nil,
-                      speech: String? = nil) {
+                      speech: String? = nil, timing: String? = nil) {
         var lines = ["  生(\(raw.count)字): \(DebugLog.oneLine(raw, max: 300))"]
         if let mic { lines.append("  マイク: \(mic)") }
         if let speech { lines.append("  測定: \(speech)") }
+        if let timing { lines.append("  所要: \(timing)") }
         if let candidate {
             lines.append("  整形後(\(candidate.count)字): \(DebugLog.oneLine(candidate, max: 300))")
         } else {
@@ -122,6 +126,26 @@ enum TranscriptDebugLog {
         }
         let entry = (["[\(DebugLog.timestamp())] 音声入力"] + lines).joined(separator: "\n") + "\n"
         DebugLog.prepend(entry, to: "transcript-debug.log", limit: 30_000)
+    }
+
+    /// 所要時間の1行。例: 「認識 0.62秒／整形 0.31秒（qwen/qwen3.8-27b）」
+    /// 予備モデルに切り替わった回は「（予備 qwen/qwen3.6-27b: qwen/qwen3.8-27b は HTTP 429（出力トークンの上限））」。
+    /// `grep 予備 transcript-debug.log` で、設定のモデルがどれだけ使えていないかを数えられる
+    static func timingLine(transcribe: TimeInterval, cleanup: TimeInterval?, model: String?, fallbackNote: String?,
+                           cleanupFailed: Bool = false) -> String {
+        var text = String(format: "認識 %.2f秒", transcribe)
+        guard let cleanup else { return text }
+        text += String(format: "／整形 %.2f秒", cleanup)
+        if cleanupFailed {
+            text += "（失敗）"
+        } else if let model {
+            if let fallbackNote {
+                text += "（予備 \(model): \(fallbackNote)）"
+            } else {
+                text += "（\(model)）"
+            }
+        }
+        return text
     }
 
     /// 何も言わずに止めた録音を Groq へ送らずに終えた。

@@ -6,7 +6,10 @@ import Foundation
 enum EditDebugLog {
     static var url: URL { DebugLog.url("edit-debug.log") }
 
-    static func write(selection: String, instruction: String, result: String?, error: String? = nil) {
+    /// - Parameters:
+    ///   - model: 実際に編集したモデル。予備に切り替わった回は `fallbackNote` に設定のモデルの失敗理由が入る
+    static func write(selection: String, instruction: String, result: String?, error: String? = nil,
+                      model: String? = nil, fallbackNote: String? = nil) {
         var lines = [
             "[\(DebugLog.timestamp())] 編集モード",
             "  選択(\(selection.count)字): \(DebugLog.oneLine(selection, max: 120))",
@@ -14,6 +17,9 @@ enum EditDebugLog {
         ]
         if let result {
             lines.append("  結果(\(result.count)字): \(DebugLog.oneLine(result, max: 120))")
+        }
+        if let model {
+            lines.append(fallbackNote.map { "  モデル: 予備 \(model)（\($0)）" } ?? "  モデル: \(model)")
         }
         if let error {
             lines.append("  エラー: \(DebugLog.oneLine(error, max: 200))")

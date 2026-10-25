@@ -133,7 +133,7 @@ Task {
 
         // ---- 2. 正常系: 認識した指示で編集（全経路）----
         print("2. 編集の正常系（音声→認識→編集の全経路）")
-        let edited = try await editor.edit(selection: memo, instruction: transcript)
+        let edited = try await editor.edit(selection: memo, instruction: transcript).text
         print("   編集結果:\n\(edited.split(separator: "\n").map { "   | \($0)" }.joined(separator: "\n"))")
         expect(looksLikeBulletList(edited), "編集結果が箇条書きになっている", detail: edited)
         expect(edited.contains("500円") || edited.contains("料金"), "内容（料金プラン）が保持されている", detail: edited)
@@ -144,7 +144,7 @@ Task {
         // 実際に起きた事故: 選択部分が「you？」に置き換わった
         print("3. 事故再現系（壊れた指示で選択テキストが破壊されないか）")
         for broken in ["you?", "Thank you.", "ご視聴ありがとうございました", "はい"] {
-            let result = try await editor.edit(selection: memo, instruction: broken)
+            let result = try await editor.edit(selection: memo, instruction: broken).text
             let preserved = result == memo
                 || (result.contains("料金プラン") && result.contains("8月末") && result.contains("TikTok"))
             expect(preserved, "壊れた指示「\(broken)」で本文が保持される",
@@ -185,7 +185,7 @@ Task {
 
         // 4-4. 幻覚句が編集モードに流れ込んでも本文が保持される（従来の検証）
         if !silentTranscript.isEmpty {
-            let result = try await editor.edit(selection: memo, instruction: silentTranscript)
+            let result = try await editor.edit(selection: memo, instruction: silentTranscript).text
             let preserved = result == memo
                 || (result.contains("料金プラン") && result.contains("8月末") && result.contains("TikTok"))
             expect(preserved, "無音の幻聴「\(silentTranscript)」が編集に流れても本文が保持される",
@@ -194,10 +194,40 @@ Task {
 
         // ---- 5. 英語指示（言語をまたぐケース）----
         print("5. 英語指示")
-        let en = try await editor.edit(selection: memo, instruction: "make this a bulleted list")
+        let en = try await editor.edit(selection: memo, instruction: "make this a bulleted list").text
         expect(looksLikeBulletList(en), "英語指示でも箇条書きになる", detail: en)
         expect(en.contains("TikTok") && (en.contains("500円") || en.contains("料金")),
                "英語指示でも日本語の内容が保持される", detail: en)
+
+        // ---- 6. 整形（つなぎ言葉の除去・句読点）と、設定のモデルが使えないときの予備モデル ----
+        // 2026-09-09〜10 に、出力上限を付けない整形が 429（出力トークン／分の上限）で断られ、
+        // 1.5秒待ったあとに生テキストが貼られていた。出力上限付きで1往復で整形が返ること、
+        // 設定のモデルが使えないときに待たずに予備で整形できることを実APIで通す
+        print("6. 整形（つなぎ言葉の除去・句読点）と予備モデル")
+        let fillerWav = try synthesizeSpeech("えーっと、今日は、あのー、整形を速くする作業をしています。ログを見たら原因が分かりました。")
+        let fillerTranscript = try await whisper.transcribe(wav: fillerWav)
+        print("   認識結果: \(fillerTranscript)")
+        let cleanupStarted = Date()
+        let cleaned = try await editor.cleanup(text: fillerTranscript)
+        let cleanupSeconds = Date().timeIntervalSince(cleanupStarted)
+        print("   整形結果: \(cleaned.text)（\(String(format: "%.2f", cleanupSeconds))秒・\(cleaned.model)）")
+        expect(cleaned.accepted, "整形結果が検算を通る", detail: cleaned.candidate)
+        expect(cleaned.model == config.cleanup_model && cleaned.fallbackNote == nil,
+               "設定のモデルで整形できる（予備に落ちていない）", detail: cleaned.fallbackNote ?? "")
+        expect(!cleaned.text.contains("えーっと") && !cleaned.text.contains("あのー"), "つなぎ言葉が消える", detail: cleaned.text)
+        expect(cleaned.text.contains("作業をしています") && cleaned.text.contains("原因"), "中身は残る", detail: cleaned.text)
+        expect(cleanupSeconds < 2.0, "整形が2秒以内に返る（実測 \(String(format: "%.2f", cleanupSeconds))秒）")
+
+        // 設定のモデルが使えない（廃止など）ときは、待たずに予備モデルで整形する
+        let brokenPrimary = GroqClient(apiKey: apiKey, model: "voicepaste/no-such-model")
+        let fallbackStarted = Date()
+        let viaFallback = try await brokenPrimary.cleanup(text: fillerTranscript)
+        let fallbackSeconds = Date().timeIntervalSince(fallbackStarted)
+        print("   予備モデル: \(viaFallback.model)（\(viaFallback.fallbackNote ?? "切り替えなし")・\(String(format: "%.2f", fallbackSeconds))秒）")
+        expect(GroqClient.fallbackChatModels.contains(viaFallback.model), "設定のモデルが無ければ予備モデルで整形する", detail: viaFallback.model)
+        expect(viaFallback.fallbackNote?.contains("voicepaste/no-such-model") == true, "切り替えた理由が残る", detail: viaFallback.fallbackNote ?? "nil")
+        expect(viaFallback.accepted && !viaFallback.text.contains("えーっと"), "予備モデルでも整形できる", detail: viaFallback.text)
+        expect(fallbackSeconds < 2.5, "切り替えても待たない（実測 \(String(format: "%.2f", fallbackSeconds))秒）")
     } catch {
         failures += 1
         print("  ❌ 例外: \(error.localizedDescription)")

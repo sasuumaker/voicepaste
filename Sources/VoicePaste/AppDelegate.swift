@@ -208,6 +208,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         startLiveCaptionIfEnabled()
 
+        // Groq への接続を録音中に済ませておく（止めたあとの認識が TLS の握手ぶん ≈0.2秒 速くなる）
+        if let apiKey = config.resolvedAPIKey { GroqClient.warmUp(apiKey: apiKey) }
+
         do {
             // 開始音はマイクが実際に生きてから鳴らす（ポンが鳴ったら喋ってOKの合図）
             try recorder.start(deviceID: deviceID, onCaptureLive: {
@@ -301,7 +304,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let thisRun = runID
         transcribeTask = Task {
             do {
+                let transcribeStarted = Date()
                 let transcript = try await client.transcribe(wav: wav)
+                let transcribeSeconds = Date().timeIntervalSince(transcribeStarted)
                 // 無音判定をすり抜けた音（息がマイクにかかった等）から Whisper が作る決まり文句は、
                 // 全文一致のときだけ「何も言っていない」として扱う
                 let isHallucination = KnownHallucinations.isKnownPhrase(transcript)
@@ -318,25 +323,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         // 整形失敗時は生テキストにフォールバック（貼り付けを止めない）。
                         // ただし理由は必ずログに残す。残していなかったせいで、整形モデルの廃止に9日間気づけなかった（2026-08-29）
                         let cleaner = GroqClient(apiKey: apiKey, model: cleanupConfig.cleanup_model)
+                        let cleanupStarted = Date()
                         do {
                             let result = try await cleaner.cleanup(text: raw)
                             text = result.text
                             TranscriptDebugLog.write(
                                 raw: raw, candidate: result.candidate, accepted: result.accepted, mic: micName,
-                                speech: speechSummary
+                                speech: speechSummary,
+                                timing: TranscriptDebugLog.timingLine(
+                                    transcribe: transcribeSeconds, cleanup: Date().timeIntervalSince(cleanupStarted),
+                                    model: result.model, fallbackNote: result.fallbackNote
+                                )
                             )
                         } catch {
                             text = raw
                             cleanupFailure = error.localizedDescription
                             TranscriptDebugLog.write(raw: raw, candidate: nil, accepted: nil,
                                                      note: "★整形に失敗: \(error.localizedDescription)", mic: micName,
-                                                     speech: speechSummary)
+                                                     speech: speechSummary,
+                                                     timing: TranscriptDebugLog.timingLine(
+                                                         transcribe: transcribeSeconds,
+                                                         cleanup: Date().timeIntervalSince(cleanupStarted),
+                                                         model: nil, fallbackNote: nil, cleanupFailed: true
+                                                     ))
                         }
                     } else {
                         text = raw
                         TranscriptDebugLog.write(raw: raw, candidate: nil, accepted: nil,
                                                  note: cleanupConfig.cleanup_enabled ? "無音（整形にかけない）" : "整形オフ", mic: micName,
-                                                 speech: speechSummary)
+                                                 speech: speechSummary,
+                                                 timing: TranscriptDebugLog.timingLine(
+                                                     transcribe: transcribeSeconds, cleanup: nil, model: nil, fallbackNote: nil
+                                                 ))
                     }
                 case .edit(let selection):
                     // 指示が無音なら何もしない。編集APIが失敗したら throw → エラー表示
@@ -349,8 +367,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     let editor = GroqClient(apiKey: apiKey, model: cleanupConfig.cleanup_model)
                     do {
-                        text = try await editor.edit(selection: selection, instruction: raw)
-                        EditDebugLog.write(selection: selection, instruction: raw, result: text)
+                        let edited = try await editor.edit(selection: selection, instruction: raw)
+                        text = edited.text
+                        EditDebugLog.write(selection: selection, instruction: raw, result: text,
+                                           model: edited.model, fallbackNote: edited.fallbackNote)
                     } catch {
                         EditDebugLog.write(selection: selection, instruction: raw, result: nil,
                                            error: error.localizedDescription)

@@ -27,5 +27,5 @@ jobs:
       - name: ビルド
         run: swift build
 
-      - name: ユニットテスト実行（136ケース・XCTest非依存ランナー）
+      - name: ユニットテスト実行（218ケース・XCTest非依存ランナー）
         run: swift run VoicePasteTests
