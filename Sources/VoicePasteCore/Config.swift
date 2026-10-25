@@ -23,6 +23,9 @@ public struct Config: Codable {
     /// 録音に使うマイク。`builtin`（Macの内蔵・既定）/ `system`（macOSの設定に従う）/ 機器のUID。
     /// AirPodsをつなぐとmacOSの既定入力がAirPodsになり認識精度が落ちるので、既定はmacOSに従わない
     public var input_device: String
+    /// 学習用に残す: 音声入力した声を元の音質で保存する（声のモデルの学習用）。
+    /// 仕事の話を残さないようにメニューバーで切り替える。既定はオフ（2026-10-25）
+    public var keep_training_voice: Bool
 
     public init(
         groq_api_key: String,
@@ -36,7 +39,8 @@ public struct Config: Codable {
         live_caption_enabled: Bool,
         live_caption_locale: String,
         paste_via_clipboard: Bool,
-        input_device: String = InputDeviceSelection.builtIn
+        input_device: String = InputDeviceSelection.builtIn,
+        keep_training_voice: Bool = false
     ) {
         self.groq_api_key = groq_api_key
         self.model = model
@@ -50,6 +54,7 @@ public struct Config: Codable {
         self.live_caption_locale = live_caption_locale
         self.paste_via_clipboard = paste_via_clipboard
         self.input_device = input_device
+        self.keep_training_voice = keep_training_voice
     }
 
     /// 古い config.json に無いキーはデフォルト値で埋める（後方互換）
@@ -69,6 +74,7 @@ public struct Config: Codable {
         live_caption_locale = try container.decodeIfPresent(String.self, forKey: .live_caption_locale) ?? def.live_caption_locale
         paste_via_clipboard = try container.decodeIfPresent(Bool.self, forKey: .paste_via_clipboard) ?? def.paste_via_clipboard
         input_device = try container.decodeIfPresent(String.self, forKey: .input_device) ?? def.input_device
+        keep_training_voice = try container.decodeIfPresent(Bool.self, forKey: .keep_training_voice) ?? def.keep_training_voice
     }
 
     /// Groqから廃止された整形モデル。config.json に残っていたら読み込み時に既定へ置き換える。
@@ -92,7 +98,8 @@ public struct Config: Codable {
         live_caption_enabled: true,
         live_caption_locale: "ja-JP",
         paste_via_clipboard: false,
-        input_device: InputDeviceSelection.builtIn
+        input_device: InputDeviceSelection.builtIn,
+        keep_training_voice: false
     )
 
     public static var configURL: URL {

@@ -26,6 +26,7 @@ Aqua Voice相当のmacOS音声入力アプリ（個人利用・自作）。
 | 11 | マイクの選択 | 録音に使うマイクを設定で選べる。既定は**Macの内蔵マイク**（AirPodsをつないでmacOSの既定入力がAirPodsになっても内蔵で録る。AirPodsのマイクは認識精度が大きく落ちるため・本人実感 2026-08-30）。`input_device` = `builtin` / `system`（macOSの設定に従う）/ 機器のUID。設定画面の「マイク」欄はつながっている機器を毎回取り直して一覧にする。設定した機器が未接続なら内蔵に戻し、理由をメニューに出す。録音中のポップアップ・メニュー・診断ログに使っているマイク名を出す |
 | 12 | 無音なら貼らない | 何も言わずに録音を止めたら、何も貼らずに待機へ戻る。録った音に声が無ければGroqへ送らず（`SpeechPresence`）、送ってしまった結果が無音から作られる決まり文句（「ご視聴ありがとうございました」等）そのものなら捨てる（`KnownHallucinations`）。エラー扱いにはせず、ポップアップに「無音でした」を短く出すだけ |
 | 13 | 固まったら起動し直す | マイクの開始・停止が8秒たっても戻らなければ、記録を残してアプリを終了し、自動起動（launchd）が起動し直す。起動後に理由をポップアップとメニューに出す（`AudioCallTimeout`）。後述「録音開始でアプリが固まった件」 |
+| 14 | 学習用に残す | メニューバーの「学習用に残す」がオンの間、音声入力した声をマイクの元の音質（48kHz）の WAV と文字起こしの json で1回ずつ保存する（声のモデルの学習用）。仕事の話のときはオフにする。既定はオフ。後述「学習用に残す」 |
 
 ## デフォルト設定（`~/.config/voicepaste/config.json`）
 
@@ -42,11 +43,14 @@ Aqua Voice相当のmacOS音声入力アプリ（個人利用・自作）。
   "live_caption_enabled": true,
   "live_caption_locale": "ja-JP",
   "paste_via_clipboard": false,
-  "input_device": "builtin"
+  "input_device": "builtin",
+  "keep_training_voice": false
 }
 ```
 
 - 古いconfig.jsonにキーが欠けていてもデフォルト値で補完される（後方互換）
+- `keep_training_voice` は「学習用に残す」のオン・オフ。メニューバーで切り替えると保存される。設定画面の保存では変えない
+  （画面を開いたあとにメニューで切り替えていても、画面の古い値で戻さない）
 - `input_device` は録音に使うマイク。`builtin`（既定・Macの内蔵マイク）/ `system`（macOSの「サウンド」設定の入力に従う）/
   機器のUID（設定画面で機器名を選ぶと保存される）。決め方は `InputDeviceSelection.resolve`（Core・テスト済み）:
   内蔵指定で内蔵が無ければmacOSの既定へ、UID指定で未接続なら内蔵へ、それも無ければmacOSの既定へ。設定どおりでないときは理由を添える
@@ -76,16 +80,17 @@ Sources/
 │   ├── InputDeviceSelection.swift # 設定値とつながっている機器から、録音に使うマイクを決める（純粋関数）
 │   ├── SpeechPresence.swift # 録った音に声が入っていたかの判定（純粋関数）。無音なら Groq へ送らない
 │   ├── KnownHallucinations.swift # Whisper が無音から作る決まり文句の照合（全文一致）
+│   ├── TrainingVoice.swift  # 学習用に残す: 残すかの判断・wav と json の書き出し・たまった量
 │   └── GroqClient.swift     # Groq API（認識=multipart POST・送り直しあり／整形・編集=chat・出力上限付き・失敗時は予備モデルへ即切り替え・接続の温め）
 ├── VoicePaste/              # メニューバーアプリ本体
-│   ├── main.swift           # エントリポイント（accessory app）
+│   ├── main.swift           # エントリポイント（accessory app）・確かめ用の起動（--selftest-record・--hud-snapshot）
 │   ├── AppDelegate.swift    # 状態管理・メニュー・録音フロー
 │   ├── HotKeyManager.swift  # Carbon RegisterEventHotKey（権限不要）・全解除して再登録も可
-│   ├── AudioRecorder.swift  # 入力用の音声ユニット（AUHAL）を直接開く → 16kHzモノラル変換・音量とバッファを外へ流す。AVAudioEngine は使わない
+│   ├── AudioRecorder.swift  # 入力用の音声ユニット（AUHAL）を直接開く → 16kHzモノラル変換・音量と変換後の音を字幕へ渡す。学習用に残す回だけ、変換前の音もモノラルで溜める。AVAudioEngine は使わない
 │   ├── AudioCallTimeout.swift # マイクの開始・停止が8秒戻らなければアプリを終了して起動し直させる歯止め
 │   ├── RecorderSelfTest.swift # `--selftest-record`: 録音の開始・停止をくり返す実機確認
 │   ├── AudioInputDevices.swift # CoreAudioで入力機器の一覧（名前・UID・内蔵か・macOSの既定か）を取る
-│   ├── HUDPanel.swift       # 画面下のポップアップ（状態・音量メーター・字幕）
+│   ├── HUDPanel.swift       # 画面下のポップアップ（状態・音量メーター・字幕・録音中の「学習用に残す」ボタン）
 │   ├── LiveTranscriber.swift # 録音中の逐次表示（Speech framework・オンデバイス限定）
 │   ├── SettingsWindow.swift # 設定画面 + キーを押して登録する入力欄
 │   ├── Paster.swift         # クリップボード + Cmd+V送信（CGEvent）
@@ -236,6 +241,7 @@ Esc は元から「何も送らない」経路なので、問題が出るのは�
 ```bash
 open -n -W --stdout out.txt --stderr out.txt build/VoicePaste.app --args --selftest-record 100 0.3
 # 回数・1回の秒数・（任意）最後の録音を保存する WAV のパス。各回の開始時間・最初の音まで・録れた長さ・音量ピークが出る
+# パスを渡すと、最後の録音は学習用に残すと同じく元の音質も取り、<パス>.full.wav に保存して「元の音質: 48000Hz・1.99秒」を出す
 ```
 
 ### 途中で取り消す（Esc）
@@ -376,6 +382,10 @@ Clipy や Paste のようなクリップボード履歴アプリを使ってい�
 - **絶対条件: キーボードフォーカスを奪わないこと**。貼り付け先は「いま入力しているアプリ」なので、
   この窓が一瞬でもキーウィンドウになると貼り付け先を見失う。
   そのため `NSPanel` + `.nonactivatingPanel` + `ignoresMouseEvents = true` + `orderFrontRegardless()` で出す
+  - 例外: 音声入力の録音中だけ、右上に「学習用に残す: オン／オフ」のボタンを出し、マウスを受け付ける（`ignoresMouseEvents = false`）。
+    ポップアップは枠なしの `.nonactivatingPanel` のままなので、キーウィンドウにもメインウィンドウにもなれない（`canBecomeKey`・`canBecomeMain` が false。2026-10-25 確認）。
+    押してもこのアプリは前に出ず、入力中のアプリのキー入力先は変わらない。ボタンは前に出ていないポップアップでも1回目で押せる `FirstClickButton`（`acceptsFirstMouse` が true）。
+    録音が終わる（認識中・結果・エラー）と、ボタンを消してマウスを受け付けない状態に戻す
 - 表示先は **マウスのある画面**。`NSScreen.main` はこのアプリ側のキーウィンドウ基準なので、
   常駐アプリだと打ち込んでいる画面と食い違う（マルチディスプレイで実測して修正済み）
 - 中身: 上段に音量メーター（直近30コマの履歴を流す）と状態・経過時間、その下に字幕を横幅いっぱいで表示
@@ -510,6 +520,31 @@ plistの中身を持つ場所を Swift 側に一本化するため（シェル�
 
 メニューからのオン/オフが登録ファイルの置き消しだけなのは、**いま動いているVoicePasteを巻き込まないため**。
 launchd 経由で起動された自分自身を `bootout` すると、その場で終了してしまう。
+
+### 学習用に残す（2026-10-25）
+
+本人の声の合成モデル（Style-Bert-VITS2）を学習するために、ふだんの音声入力の声を集める。
+用意した台本を読むより、話すときの抑揚が入る（台本だけで学習した試しのモデルは、抑揚のおかしい所があった）。
+
+- 切り替え: メニューバーの「学習用に残す（たまった声 N件・M分）」。チェックが付いている間は保存する。
+  既定はオフ。仕事の話は残してよいときと悪いときがあるので、本人が切り替える
+- オンの間の目印: 待機中のメニューバーのアイコンが `mic.badge.plus`（マイクに＋）になる
+- 録音中のポップアップの右上に「● 学習用に残す: オン」（緑）／「○ 学習用に残す: オフ」（灰色）のボタンを出す。
+  話しながら「これは残せない」と気づいたら、マウスで押してオフにできる（本人の要望 2026-10-25）。
+  押すとメニューと同じ設定が切り替わり、次の録音からもそのまま（仕事の話は続くことが多く、戻し忘れても残さない側になるため）。編集モードの録音では出さない
+- 残すかは**録音を止めた時点**の設定で決める。話している途中でオフにした回は残さず、途中でオンにした回は残す。
+  そのため音声入力の録音では、設定によらず毎回元の音質もメモリに溜め、残さない回は捨てる（48kHz で1秒あたり約190KB）
+- 残すのは音声入力だけ。編集モードの指示・声なし・幻覚句・文字起こしが空の回は残さない（`TrainingVoice.shouldKeep`・テスト済み）
+- 音質: Groq へ送る音は 16kHz に落としてあり、学習には足りない（44.1kHz 以上が要る）。オンの回だけ、
+  AUHAL から受け取った変換前の音（MacBook Air のマイクは 48kHz）をチャンネルの平均でモノラルにして別に溜める。オフの回は溜めない
+- 置き場所: `~/Library/Application Support/VoicePaste/training-voice/`。1回ごとに同じ名前（UTC の日時とミリ秒 `20261025-013000-123`）で
+  - `.wav`: 元の音質・16bit・モノラル
+  - `.json`: `recorded_at`（ミリ秒まで）・`raw`（Groq の生の文字起こし）・`cleaned`（貼った文）・`mic`・`seconds`・`sample_rate`・`transcribe_model`
+- 学習に使うときは手元の Whisper でもう一度文字起こしし、`raw` と食い違う回は使わない（つなぎ言葉の化けなど、文字の誤りが学習の質を下げるため）
+- 保存に失敗しても貼り付けは止めない。失敗はメニューに「⚠️ 学習用の声を保存できませんでした」と出す
+- たまった量は起動時に json を数え、残すたびに足す（`TrainingVoice.totals`）
+- 実機の確認: `--selftest-record 3 2 <パス>` で、最後の録音の元の音質が `<パス>.full.wav` に 48000Hz で保存される（2026-10-25 確認）
+- 見た目の確認: `.build/debug/VoicePaste --hud-snapshot <フォルダ>` で、録音中のポップアップ（ボタンがオン・オフ・なし）を画面に出さずに PNG 3枚に書き出す
 
 ## ビルド・テスト
 

@@ -6,6 +6,8 @@ import Foundation
 /// 設計上の絶対条件: **キーボードフォーカスを奪わないこと**。
 /// 貼り付け先は「いま入力中のアプリ」なので、この窓が一瞬でもキーウィンドウになると
 /// 貼り付け先を見失う。そのため nonactivatingPanel + ignoresMouseEvents + orderFrontRegardless で出す。
+/// 例外は録音中の「学習用に残す」ボタンだけ。録音中に限ってマウスを受け付けるが、ポップアップは nonactivatingPanel で
+/// 枠なし（キーウィンドウになれない）なので、押してもこのアプリは前に出ず、入力中のアプリのキー入力先は変わらない
 ///
 /// 喋った内容は消さずに溜める。文章が増えたら**下端を固定したまま上へ伸びる**。
 /// 伸びる上限に達したら、そこから先は古い方を落として最新側を残す。
@@ -24,6 +26,11 @@ final class HUDPanel {
     private let meter = LevelMeterView(frame: .zero)
     private let stateLabel = NSTextField(labelWithString: "")
     private let textLabel = NSTextField(labelWithString: "")
+    private let trainingButton = FirstClickButton()
+    /// 録音中のボタンの状態。nil ならボタンを出さない（編集モード・録音中でないとき）
+    private var trainingOn: Bool?
+    /// 録音中に「学習用に残す」ボタンが押された。オン・オフの切り替えは AppDelegate が行い、updateTraining で戻す
+    var onToggleTraining: (() -> Void)?
     private var hideWorkItem: DispatchWorkItem?
     private var elapsedTimer: Timer?
     private var recordingStartedAt: Date?
@@ -32,6 +39,7 @@ final class HUDPanel {
     private static let padding: CGFloat = 16
     private static let topRowHeight: CGFloat = 18
     private static let meterWidth: CGFloat = 90
+    private static let trainingButtonWidth: CGFloat = 150
     private static let gap: CGFloat = 10
     /// 画面を覆いすぎないための上限。ここを超えたら古い方を落として最新側を残す
     private static let maxTextHeight: CGFloat = 260
@@ -42,10 +50,13 @@ final class HUDPanel {
 
     // MARK: - 公開API
 
-    /// - Parameter mic: 録音に使っているマイクの名前。AirPodsをつないでいても内蔵で録っていることが一目で分かるように出す
-    func showRecording(isEdit: Bool, hint: String, mic: String? = nil) {
+    /// - Parameters:
+    ///   - mic: 録音に使っているマイクの名前。AirPodsをつないでいても内蔵で録っていることが一目で分かるように出す
+    ///   - training: 「学習用に残す」の今の状態。nil ならボタンを出さない（編集モード）
+    func showRecording(isEdit: Bool, hint: String, mic: String? = nil, training: Bool? = nil) {
         recordingStartedAt = Date()
         meter.reset()
+        trainingOn = training
         setState(isEdit ? .editRecording(hint: hint, mic: mic) : .recording(hint: hint, mic: mic))
         setText(isEdit ? "編集の指示をどうぞ…" : "どうぞ…", dimmed: true)
         show()
@@ -56,6 +67,13 @@ final class HUDPanel {
     func updateCaption(_ text: String) {
         guard !text.isEmpty else { return }
         setText(text, dimmed: false)
+    }
+
+    /// 録音中にボタンやメニューで切り替えたとき、ボタンの表示を合わせる
+    func updateTraining(_ on: Bool) {
+        guard trainingOn != nil else { return }
+        trainingOn = on
+        refreshTrainingButton()
     }
 
     func updateLevel(_ level: Float) {
@@ -114,6 +132,19 @@ final class HUDPanel {
         scheduleHide(after: 3.5)
     }
 
+    /// 見た目の確かめ用（`VoicePaste --hud-snapshot <フォルダ>`）: 録音中のポップアップを、画面に出さずに PNG にする
+    func writeRecordingSnapshot(training: Bool?, to url: URL) throws {
+        trainingOn = training
+        let panel = panel ?? makePanel()
+        setState(.recording(hint: "⌘/", mic: "MacBook Airのマイク"))
+        setText("今日は、声のモデルの学習に使う音声入力の試しです。", dimmed: false)
+        refreshTrainingButton()
+        guard let view = panel.contentView,
+              let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        try bitmap.representation(using: .png, properties: [:])?.write(to: url)
+    }
+
     func hide() {
         stopElapsedTimer()
         hideWorkItem?.cancel()
@@ -130,6 +161,9 @@ final class HUDPanel {
     // MARK: - 中身の更新
 
     private func setState(_ state: State) {
+        // ボタンは録音中（音声入力）だけ。ほかの状態ではマウスを受け付けず、下の画面のクリックを邪魔しない
+        if case .recording = state {} else { trainingOn = nil }
+        refreshTrainingButton()
         switch state {
         case .recording(let hint, let mic):
             stateLabel.stringValue = "● 録音中   0:00   \(hint) で停止 ／ ⎋ で取り消し" + Self.micSuffix(mic)
@@ -153,6 +187,23 @@ final class HUDPanel {
             stateLabel.stringValue = "⚠️ エラー"
             stateLabel.textColor = .systemOrange
         }
+    }
+
+    private func refreshTrainingButton() {
+        guard let on = trainingOn else {
+            trainingButton.isHidden = true
+            panel?.ignoresMouseEvents = true
+            return
+        }
+        trainingButton.isHidden = false
+        panel?.ignoresMouseEvents = false
+        let title = on ? "● 学習用に残す: オン" : "○ 学習用に残す: オフ"
+        trainingButton.attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: on ? NSColor.systemGreen : NSColor.secondaryLabelColor,
+        ])
+        trainingButton.toolTip = on ? "押すとオフ（この回から残さない）" : "押すとオン（この回から残す）"
+        relayout()
     }
 
     private static func micSuffix(_ mic: String?) -> String {
@@ -231,12 +282,15 @@ final class HUDPanel {
 
         let topRowY = height - Self.padding - Self.topRowHeight
         meter.frame = NSRect(x: Self.padding, y: topRowY + 1, width: Self.meterWidth, height: 16)
+        let buttonSpace = trainingButton.isHidden ? 0 : Self.trainingButtonWidth + Self.gap
         stateLabel.frame = NSRect(
             x: Self.padding + Self.meterWidth + Self.gap,
             y: topRowY,
-            width: Self.width - Self.padding * 2 - Self.meterWidth - Self.gap,
+            width: Self.width - Self.padding * 2 - Self.meterWidth - Self.gap - buttonSpace,
             height: Self.topRowHeight
         )
+        trainingButton.frame = NSRect(x: Self.width - Self.padding - Self.trainingButtonWidth, y: topRowY - 2,
+                                      width: Self.trainingButtonWidth, height: Self.topRowHeight + 4)
         textLabel.frame = NSRect(x: Self.padding, y: Self.padding, width: textWidth, height: textHeight)
     }
 
@@ -291,7 +345,7 @@ final class HUDPanel {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
-        panel.ignoresMouseEvents = true
+        panel.ignoresMouseEvents = trainingOn == nil
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
 
         let background = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 100))
@@ -312,13 +366,36 @@ final class HUDPanel {
         textLabel.cell?.wraps = true
         textLabel.lineBreakMode = .byWordWrapping
 
+        trainingButton.bezelStyle = .inline
+        trainingButton.controlSize = .small
+        trainingButton.isHidden = true
+        trainingButton.onClick = { [weak self] in self?.onToggleTraining?() }
+
         background.addSubview(meter)
         background.addSubview(stateLabel)
         background.addSubview(textLabel)
+        background.addSubview(trainingButton)
         panel.contentView = background
         self.panel = panel
         return panel
     }
+}
+
+/// 前に出ていないポップアップの上でも、1回目のクリックで押せるボタン。
+/// 普通のボタンは、前に出ていないウィンドウでは1回目のクリックを「ウィンドウを前に出す」ために使い、押されない
+final class FirstClickButton: NSButton {
+    var onClick: (() -> Void)?
+
+    convenience init() {
+        self.init(frame: .zero)
+        title = ""
+        target = self
+        action = #selector(clicked)
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    @objc private func clicked() { onClick?() }
 }
 
 /// 音量の履歴を左から右へ流す簡易メーター。「マイクが拾えている」ことを一目で示すためのもの

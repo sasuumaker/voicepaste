@@ -621,6 +621,76 @@ expect(!KnownHallucinations.isKnownPhrase("はい。"), "短い相槌は捨て�
 expect(!KnownHallucinations.isKnownPhrase("Thank you."), "普通の Thank you は捨てない")
 expect(!KnownHallucinations.isKnownPhrase(""), "空は幻覚句ではない（無音として別に扱う）")
 
+print("TrainingVoice（学習用に残す: 残すかの判断・書き出し・たまった量）")
+expect(TrainingVoice.shouldKeep(enabled: true, isDictation: true, hasSpeech: true,
+                                transcript: "今日は晴れです。", isHallucination: false),
+       "オン・音声入力・声あり・文字あり → 残す")
+expect(!TrainingVoice.shouldKeep(enabled: false, isDictation: true, hasSpeech: true,
+                                 transcript: "今日は晴れです。", isHallucination: false),
+       "オフ（録音を止めた時点）→ 残さない。話しながらボタンでオフにした回も同じ")
+expect(!TrainingVoice.shouldKeep(enabled: true, isDictation: false, hasSpeech: true,
+                                 transcript: "丁寧にして", isHallucination: false),
+       "編集モードの指示 → 残さない")
+expect(!TrainingVoice.shouldKeep(enabled: true, isDictation: true, hasSpeech: false,
+                                 transcript: "今日は晴れです。", isHallucination: false),
+       "声なし → 残さない")
+expect(!TrainingVoice.shouldKeep(enabled: true, isDictation: true, hasSpeech: true,
+                                 transcript: "ご視聴ありがとうございました。", isHallucination: true),
+       "幻覚句 → 残さない")
+expect(!TrainingVoice.shouldKeep(enabled: true, isDictation: true, hasSpeech: true,
+                                 transcript: "  \n", isHallucination: false),
+       "文字起こしが空白だけ → 残さない")
+
+let fixedDate = ISO8601DateFormatter().date(from: "2026-10-25T01:30:00Z")!.addingTimeInterval(0.123)
+expect(TrainingVoice.baseName(for: fixedDate) == "20261025-013000-123",
+       "ファイル名は UTC の日時とミリ秒: \(TrainingVoice.baseName(for: fixedDate))")
+
+let trainingDir = FileManager.default.temporaryDirectory
+    .appendingPathComponent("voicepaste-training-test-\(UUID().uuidString)")
+expect(TrainingVoice.totals(in: trainingDir) == TrainingVoice.Totals(count: 0, seconds: 0),
+       "置き場所がまだ無い → 0件・0秒")
+let clip = [Float](repeating: 0.25, count: 48000 * 3 / 2)  // 48kHz で 1.5 秒
+let record = TrainingVoice.Record(recordedAt: fixedDate, raw: "今日は晴れです。", cleaned: "今日は晴れです。",
+                                  mic: "MacBook Airのマイク", seconds: 1.5, sampleRate: 48000,
+                                  transcribeModel: "whisper-large-v3-turbo")
+do {
+    let saved = try TrainingVoice.save(samples: clip, record: record, to: trainingDir)
+    expect(saved.wav.lastPathComponent == "20261025-013000-123.wav"
+           && saved.json.lastPathComponent == "20261025-013000-123.json", "wav と json が同じ名前で1組できる")
+    let wavData = try Data(contentsOf: saved.wav)
+    let rate = wavData.subdata(in: 24..<28).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self).littleEndian }
+    expect(rate == 48000, "wav は元の音質（48000Hz）のまま: \(rate)")
+    expect(wavData.count == 44 + clip.count * 2, "wav は 16bit・モノラルで全部のサンプルが入る")
+    let decoded = try JSONDecoder().decode(TrainingVoice.Record.self, from: Data(contentsOf: saved.json))
+    expect(decoded.raw == "今日は晴れです。" && decoded.sampleRate == 48000 && decoded.seconds == 1.5,
+           "json に生の文字起こし・サンプルレート・秒数が入る")
+    let jsonText = try String(contentsOf: saved.json, encoding: .utf8)
+    expect(jsonText.contains("今日は晴れです") && jsonText.contains("\"recorded_at\""),
+           "json は日本語をそのまま書き、キーは snake_case")
+
+    let later = TrainingVoice.Record(recordedAt: fixedDate.addingTimeInterval(60), raw: "明日は雨です。", cleaned: "明日は雨です。",
+                                     mic: nil, seconds: 2.0, sampleRate: 48000, transcribeModel: "whisper-large-v3-turbo")
+    _ = try TrainingVoice.save(samples: [Float](repeating: 0, count: 96000), record: later, to: trainingDir)
+    try Data("関係ないファイル".utf8).write(to: trainingDir.appendingPathComponent("memo.txt"))
+    expect(TrainingVoice.totals(in: trainingDir) == TrainingVoice.Totals(count: 2, seconds: 3.5),
+           "たまった量は json の秒数の合計（ほかのファイルは数えない）")
+    expect(TrainingVoice.Totals(count: 2, seconds: 3.5).menuLabel == "2件・0.1分",
+           "メニュー用の表示: \(TrainingVoice.Totals(count: 2, seconds: 3.5).menuLabel)")
+} catch {
+    expect(false, "書き出しで例外: \(error)")
+}
+try? FileManager.default.removeItem(at: trainingDir)
+
+print("Config の keep_training_voice（学習用に残す）")
+expect(Config.default.keep_training_voice == false, "既定はオフ")
+let oldConfigJSON = #"{"groq_api_key":"x","model":"whisper-large-v3-turbo"}"#
+let oldConfig = try? JSONDecoder().decode(Config.self, from: Data(oldConfigJSON.utf8))
+expect(oldConfig?.keep_training_voice == false, "古い config.json（キーなし）はオフとして読む")
+var onConfig = Config.default
+onConfig.keep_training_voice = true
+let roundTrip = try? JSONDecoder().decode(Config.self, from: JSONEncoder().encode(onConfig))
+expect(roundTrip?.keep_training_voice == true, "オンを保存して読み直してもオン")
+
 print("")
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

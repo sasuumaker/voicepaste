@@ -10,7 +10,8 @@ import VoicePasteCore
 ///     open -n -W --stdout out.txt --stderr out.txt build/VoicePaste.app --args --selftest-record 50
 ///
 /// 2つ目の数は1回の録音の秒数（既定 0.5）。3つ目にパスを渡すと、最後の録音を WAV で保存する
-/// （変換後の音が聞き取れるかを、Groq で文字起こしして確かめるため）
+/// （変換後の音が聞き取れるかを、Groq で文字起こしして確かめるため）。
+/// そのときは最後の録音だけ「学習用に残す」と同じくマイクの元の音質も取り、`<パス>.full.wav` に保存する
 enum RecorderSelfTest {
     /// - Returns: 終了コード。すべて録れたら 0
     static func run(cycles: Int, seconds: TimeInterval = 0.5, saveLastTo wavPath: String? = nil) -> Int32 {
@@ -29,7 +30,8 @@ enum RecorderSelfTest {
             let began = CFAbsoluteTimeGetCurrent()
             var liveAt: CFAbsoluteTime?
             do {
-                try recorder.start(deviceID: deviceID, onCaptureLive: { liveAt = CFAbsoluteTimeGetCurrent() })
+                try recorder.start(deviceID: deviceID, keepFullRate: index == cycles && wavPath != nil,
+                                   onCaptureLive: { liveAt = CFAbsoluteTimeGetCurrent() })
             } catch {
                 failures += 1
                 print("[\(index)] ★開始できず（\(micName)）: \(error.localizedDescription)")
@@ -42,6 +44,14 @@ enum RecorderSelfTest {
             let wav = recorder.stop()
             if index == cycles, let wavPath {
                 try? wav.write(to: URL(fileURLWithPath: wavPath))
+                if let full = recorder.lastFullRate {
+                    try? WAV.encode(samples: full.samples, sampleRate: full.sampleRate)
+                        .write(to: URL(fileURLWithPath: wavPath + ".full.wav"))
+                    print(String(format: "元の音質: %dHz・%.2f秒", full.sampleRate,
+                                 Double(full.samples.count) / Double(full.sampleRate)))
+                } else {
+                    print("★元の音質の音が届かなかった")
+                }
             }
 
             let firstSound = liveAt.map { String(format: "%.3f秒", $0 - began) } ?? "届かず"
